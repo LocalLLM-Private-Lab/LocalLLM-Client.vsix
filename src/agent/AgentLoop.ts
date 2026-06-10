@@ -121,6 +121,7 @@ export class AgentLoop {
       const hasImages = messages.some(m => m.images && m.images.length > 0);
       const temperature = degenerationRetries > 0 ? 0.55 : CODING_SAMPLE_OPTIONS.temperature;
 
+      let streamError: unknown = null;
       try {
         await this.client.chatStream(
           {
@@ -135,14 +136,25 @@ export class AgentLoop {
           onDelta,
           callController.signal
         );
-      } catch {
-        // AbortError from callController (degeneration) or from user stop — handled below
+      } catch (err) {
+        // AbortError from degeneration/user stop is expected and handled below.
+        // Everything else (connection refused, timeout, runtime TypeError…)
+        // MUST surface — swallowing it shows the user a silent empty response.
+        const name = (err as Error)?.name ?? '';
+        if (name !== 'AbortError' && !signal.aborted && !degenerated) {
+          streamError = err;
+        }
       } finally {
         signal.removeEventListener('abort', propagateAbort);
       }
 
       if (signal.aborted) {
         onEvent({ type: 'done' });
+        return;
+      }
+
+      if (streamError) {
+        onEvent({ type: 'error', content: `LLM request failed: ${String(streamError)}` });
         return;
       }
 

@@ -208,6 +208,7 @@ export class DebugPhaseAgent {
       const hasImages = messages.some(m => m.images?.length);
       const temperature = degenerationRetries > 0 ? 0.55 : CODING_SAMPLE_OPTIONS.temperature;
 
+      let streamError: unknown = null;
       try {
         await this.client.chatStream(
           {
@@ -222,13 +223,22 @@ export class DebugPhaseAgent {
           onDelta,
           callController.signal
         );
-      } catch {
-        // AbortError from callController (degeneration) or from user stop — handled below
+      } catch (err) {
+        // Surface real failures — only degeneration/user aborts are expected here
+        const name = (err as Error)?.name ?? '';
+        if (name !== 'AbortError' && !signal.aborted && !degenerated) {
+          streamError = err;
+        }
       } finally {
         signal.removeEventListener('abort', propagateAbort);
       }
 
       if (signal.aborted) break;
+
+      if (streamError) {
+        onEvent({ type: 'error', content: `[${phaseName}] LLM request failed: ${String(streamError)}` });
+        return lastAssistantContent;
+      }
 
       if (degenerated) {
         degenerationRetries++;
