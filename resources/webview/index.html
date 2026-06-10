@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 style-src {{cspSource}} 'unsafe-inline';
+                 script-src 'nonce-{{nonce}}';
+                 img-src {{cspSource}} data:;" />
+  <title>Local LLM</title>
+  <style>
+    :root {
+      --bg: var(--vscode-editor-background);
+      --fg: var(--vscode-editor-foreground);
+      --input-bg: var(--vscode-input-background);
+      --input-fg: var(--vscode-input-foreground);
+      --input-border: var(--vscode-input-border);
+      --button-bg: var(--vscode-button-background);
+      --button-fg: var(--vscode-button-foreground);
+      --button-hover: var(--vscode-button-hoverBackground);
+      --border: var(--vscode-panel-border);
+      --tool-bg: var(--vscode-editorWidget-background);
+      --user-msg-bg: var(--vscode-editor-selectionBackground);
+      --code-bg: var(--vscode-textCodeBlock-background);
+      --scrollbar: var(--vscode-scrollbarSlider-background);
+      --info-bg: var(--vscode-inputValidation-infoBackground, rgba(0,122,204,0.15));
+      --info-border: var(--vscode-inputValidation-infoBorder, #007acc);
+      --dropdown-bg: var(--vscode-dropdown-background, var(--tool-bg));
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    #top-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #model-select {
+      flex: 1;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      border: 1px solid var(--input-border);
+      border-radius: 3px;
+      padding: 3px 6px;
+      font-size: 12px;
+    }
+
+    #btn-settings, #btn-new, #btn-history {
+      background: none;
+      border: none;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 4px;
+      opacity: 0.7;
+      border-radius: 3px;
+    }
+    #btn-settings:hover, #btn-new:hover, #btn-history:hover {
+      opacity: 1;
+      background: var(--tool-bg);
+    }
+    #btn-history.active {
+      opacity: 1;
+      color: var(--vscode-activityBarBadge-background, #007acc);
+    }
+
+    /* ── Messages wrapper ── */
+    #messages-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      min-height: 80px;
+    }
+
+    /* ── Chat messages ── */
+    #messages {
+      height: 100%;
+      overflow-y: auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scroll-behavior: smooth;
+    }
+    #messages::-webkit-scrollbar { width: 6px; }
+    #messages::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+
+    .msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+
+    .msg-user {
+      align-self: flex-end;
+      background: var(--user-msg-bg);
+      border-radius: 8px 8px 2px 8px;
+      padding: 8px 12px;
+      max-width: 80%;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg-assistant { align-self: flex-start; max-width: 100%; }
+    .msg-assistant .bubble {
+      word-break: break-word;
+      line-height: 1.6;
+    }
+
+    /* ── Markdown rendered output ── */
+    .md-content {
+      line-height: 1.65;
+      word-break: break-word;
+    }
+    .md-content p { margin: 0 0 8px; }
+    .md-content p:last-child { margin-bottom: 0; }
+    .md-content h1, .md-content h2, .md-content h3,
+    .md-content h4, .md-content h5, .md-content h6 {
+      margin: 12px 0 6px;
+      font-weight: bold;
+      line-height: 1.3;
+    }
+    .md-content h1 { font-size: 1.3em; }
+    .md-content h2 { font-size: 1.15em; }
+    .md-content h3 { font-size: 1.05em; }
+    .md-content code {
+      background: var(--code-bg);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.92em;
+    }
+    .md-content pre {
+      background: var(--code-bg);
+      padding: 10px 12px;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 6px 0;
+      position: relative;
+    }
+    .md-content pre code { background: none; padding: 0; font-size: inherit; }
+
+    /* ── Syntax highlighting (highlight.js — VS Code dark token colors) ── */
+    .hljs                              { display: block; overflow-x: auto; color: var(--fg); background: none; }
+    .hljs-comment, .hljs-quote        { color: #6a9955; font-style: italic; }
+    .hljs-keyword, .hljs-selector-tag,
+    .hljs-literal, .hljs-built_in     { color: #569cd6; }
+    .hljs-string, .hljs-attr,
+    .hljs-template-literal            { color: #ce9178; }
+    .hljs-number, .hljs-symbol        { color: #b5cea8; }
+    .hljs-title, .hljs-title\.function{ color: #dcdcaa; }
+    .hljs-type, .hljs-class,
+    .hljs-title\.class                { color: #4ec9b0; }
+    .hljs-variable, .hljs-params,
+    .hljs-template-variable           { color: #9cdcfe; }
+    .hljs-regexp, .hljs-link          { color: #d16969; }
+    .hljs-meta, .hljs-meta-keyword    { color: #9b9b9b; }
+    .hljs-tag, .hljs-name             { color: #4ec9b0; }
+    .hljs-operator, .hljs-punctuation { color: #d4d4d4; }
+    .hljs-property                    { color: #9cdcfe; }
+    .hljs-addition                    { color: #b5cea8; background: rgba(181,206,168,0.08); }
+    .hljs-deletion                    { color: #f44747; background: rgba(244,71,71,0.08); }
+    .hljs-emphasis                    { font-style: italic; }
+    .hljs-strong                      { font-weight: bold; }
+    .copy-btn {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      background: rgba(128,128,128,0.15);
+      border: 1px solid rgba(128,128,128,0.2);
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.15s;
+      font-family: var(--vscode-font-family);
+      line-height: 1.5;
+      z-index: 1;
+    }
+    .md-content pre:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { background: rgba(128,128,128,0.3); }
+    .md-content ul, .md-content ol { padding-left: 20px; margin: 4px 0 8px; }
+    .md-content li { margin: 2px 0; }
+    .md-content blockquote {
+      border-left: 3px solid var(--border);
+      margin: 6px 0;
+      padding: 4px 10px;
+      opacity: 0.75;
+    }
+    .md-content table {
+      border-collapse: collapse;
+      margin: 6px 0;
+      font-size: 12px;
+    }
+    .md-content th, .md-content td {
+      border: 1px solid var(--border);
+      padding: 4px 8px;
+    }
+    .md-content th { background: var(--tool-bg); font-weight: bold; }
+    .md-content hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+    .md-content a { color: var(--vscode-textLink-foreground, #4fc3f7); }
+    .md-content strong { font-weight: bold; }
+    .md-content em { font-style: italic; }
+
+    .msg-assistant .bubble code {
+      background: var(--code-bg);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family);
+    }
+    .msg-assistant .bubble pre {
+      background: var(--code-bg);
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 6px 0;
+      position: relative;
+    }
+    .msg-assistant .bubble pre code { background: none; padding: 0; }
+
+    .tool-call {
+      background: var(--tool-bg);
+      border-left: 3px solid var(--vscode-activityBarBadge-background, #007acc);
+      border-radius: 0 4px 4px 0;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      margin: 4px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tool-call-header { display: flex; align-items: center; gap: 6px; }
+    .tool-call .tool-name { font-weight: bold; color: var(--vscode-symbolIcon-functionForeground, #dcdcaa); }
+    .tc-spinner {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      border: 1.5px solid rgba(128, 128, 128, 0.2);
+      border-top-color: var(--vscode-activityBarBadge-background, #007acc);
+      filter: drop-shadow(0 0 2px var(--vscode-activityBarBadge-background, #007acc));
+      animation: orbit-glow 0.9s linear infinite;
+    }
+    .tool-result { opacity: 0.75; font-size: 11px; margin-top: 2px; }
+    .tool-result.error { color: var(--vscode-errorForeground); }
+
+    /* ── Loading dots (shown immediately after sending) ── */
+    .loading-dots {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      padding: 6px 2px;
+    }
+    .loading-dots span {
+      display: block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--fg);
+      opacity: 0.35;
+      animation: ldot 1.4s ease-in-out infinite both;
+    }
+    .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+    .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes ldot {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.25; }
+      40%           { transform: scale(1);   opacity: 0.85; }
+    }
+
+    .thinking {
+      font-style: italic;
+      opacity: 0.6;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .thinking::before {
+      content: '';
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(128, 128, 128, 0.2);
+      border-top-color: var(--vscode-focusBorder, #007acc);
+      filter: drop-shadow(0 0 3px var(--vscode-focusBorder, #007acc));
+      animation: orbit-glow 0.9s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes orbit-glow { to { transform: rotate(360deg); } }
+
+    /* ── Collapsible <think> block (reasoning models like DeepSeek-R1, Qwen3) ── */
+    .think-block {
+      margin: 4px 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      font-size: 12px;
+    }
+    .think-summary {
+      cursor: pointer;
+      padding: 4px 10px;
+      background: var(--tool-bg);
+      user-select: none;
+      font-style: italic;
+      opacity: 0.65;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .think-summary::-webkit-details-marker { display: none; }
+    .think-summary::before {
+      content: '›';
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1;
+      transition: transform 0.15s;
+      flex-shrink: 0;
+      display: inline-block;
+    }
+    details.think-block[open] .think-summary::before { transform: rotate(90deg); }
+    .think-content {
+      padding: 8px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      opacity: 0.55;
+      font-style: italic;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 11px;
+      max-height: 200px;
+      overflow-y: auto;
+      border-top: 1px solid var(--border);
+      line-height: 1.5;
+    }
+    .think-content::-webkit-scrollbar { width: 4px; }
+    .think-content::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+
+    /* ── Session history panel ── */
+    #history-panel {
+      position: absolute;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+    }
+    #history-panel.hidden { display: none; }
+
+    #history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+
+    #btn-history-close {
+      background: none;
+      border: none;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 14px;
+      opacity: 0.7;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    #btn-history-close:hover { opacity: 1; background: var(--tool-bg); }
+
+    #history-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #history-list::-webkit-scrollbar { width: 6px; }
+    #history-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+
+    #history-empty {
+      text-align: center;
+      padding: 32px 16px;
+      opacity: 0.45;
+      font-size: 13px;
+    }
+
+    .session-card {
+      background: var(--tool-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .session-card:hover { border-color: var(--button-bg, #007acc); }
+    .session-time { font-size: 10px; opacity: 0.55; margin-bottom: 3px; }
+    .session-preview { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-count { font-size: 10px; opacity: 0.5; margin-top: 2px; }
+    .session-actions { margin-top: 6px; display: flex; gap: 6px; }
+    .btn-load {
+      background: var(--button-bg);
+      color: var(--button-fg);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 3px 10px;
+    }
+    .btn-load:hover { background: var(--button-hover); }
+    .btn-delete {
+      background: none;
+      color: var(--vscode-errorForeground, #f44);
+      border: 1px solid var(--vscode-errorForeground, #f44);
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 3px 8px;
+      opacity: 0.75;
+    }
+    .btn-delete:hover { opacity: 1; }
+
+    /* ── Needs-input banner ── */
+    #needs-input-banner {
+      background: var(--info-bg);
+      border-top: 1px solid var(--info-border);
+      border-bottom: 1px solid var(--info-border);
+      color: var(--fg);
+      padding: 7px 12px;
+      font-size: 12px;
+      text-align: center;
+      flex-shrink: 0;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    #needs-input-banner.hidden { display: none; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
+
+    /* ── Attached files (inside input box) ── */
+    #attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 8px 10px 0;
+    }
+    #attachments:empty { display: none; }
+    .attachment-chip {
+      background: var(--tool-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .attachment-chip button {
+      background: none; border: none; cursor: pointer;
+      color: var(--fg); opacity: 0.6; font-size: 12px; padding: 0;
+    }
+    .attachment-chip img {
+      width: 20px;
+      height: 20px;
+      object-fit: cover;
+      border-radius: 2px;
+    }
+
+    /* ── Input area ── */
+    #input-area {
+      padding: 8px;
+      flex-shrink: 0;
+      position: relative;
+    }
+    #input-area.dragover #input-box { outline: 2px dashed var(--button-bg); outline-offset: -2px; }
+
+    /* ── Unified input box ── */
+    #input-box {
+      border: 1px solid var(--input-border, var(--border));
+      border-radius: 12px;
+      background: var(--input-bg);
+      display: flex;
+      flex-direction: column;
+    }
+    #input-box:focus-within { border-color: var(--vscode-focusBorder, var(--button-bg)); }
+
+    #user-input {
+      background: transparent;
+      color: var(--input-fg);
+      border: none;
+      outline: none;
+      padding: 10px 12px 6px;
+      resize: none;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      min-height: 38px;
+      overflow-y: auto;
+      line-height: 1.5;
+      width: 100%;
+    }
+
+    /* ── Input toolbar (bottom row inside input box) ── */
+    #input-toolbar {
+      display: flex;
+      align-items: center;
+      padding: 3px 6px;
+      gap: 2px;
+      border-top: 1px solid rgba(128,128,128,0.1);
+    }
+    #toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+    }
+    #toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .toolbar-btn {
+      background: none;
+      border: none;
+      color: var(--fg);
+      cursor: pointer;
+      padding: 4px 7px;
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1;
+      opacity: 0.45;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: opacity 0.12s, background 0.12s;
+    }
+    .toolbar-btn:hover { opacity: 0.9; background: rgba(128,128,128,0.12); }
+    .mode-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+      border: 1px solid rgba(128,128,128,0.25);
+      border-radius: 4px;
+      opacity: 0.6;
+      letter-spacing: 0.02em;
+    }
+    .mode-btn.mode-auto {
+      color: var(--button-bg, #007acc);
+      border-color: var(--button-bg, #007acc);
+      opacity: 0.85;
+    }
+    /* ── Active file chip ── */
+    .active-file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 10px;
+      opacity: 0.65;
+      max-width: 150px;
+      overflow: hidden;
+    }
+    .active-file-chip.hidden { display: none; }
+    .afc-toggle {
+      background: none;
+      border: none;
+      padding: 1px;
+      cursor: pointer;
+      color: inherit;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      border-radius: 2px;
+      line-height: 1;
+    }
+    .afc-toggle:hover { background: var(--tool-bg); }
+    .afc-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* SVG icon visibility in afc-toggle:
+       active (sendActiveFile=true)  → doc icon
+       inactive (sendActiveFile=false) → eye-slash icon */
+    .afc-toggle .afc-icon-eye-slash { display: none; }
+    .afc-toggle .afc-icon-doc       { display: block; }
+    .afc-toggle.inactive .afc-icon-doc       { display: none; }
+    .afc-toggle.inactive .afc-icon-eye-slash { display: block; }
+    .afc-toggle.inactive { opacity: 0.55; }
+    /* ── Agent mode button ── */
+    .agent-mode-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+      border: 1px solid rgba(128,128,128,0.3);
+      border-radius: 4px;
+      opacity: 0.65;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    /* ── Agent mode panel ── */
+    #agent-mode-panel {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      right: 8px;
+      width: 280px;
+      background: var(--dropdown-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      z-index: 200;
+      overflow: hidden;
+    }
+    #agent-mode-panel.hidden { display: none; }
+    .agent-mode-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .agent-mode-option:hover { background: rgba(128,128,128,0.12); }
+    .agent-mode-opt-check {
+      color: var(--button-bg, #007acc);
+      font-size: 13px;
+      flex-shrink: 0;
+      opacity: 0;
+      padding-top: 1px;
+    }
+    .agent-mode-option.selected .agent-mode-opt-check { opacity: 1; }
+    /* ── Mode panel ── */
+    #mode-panel {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 8px;
+      width: 300px;
+      background: var(--dropdown-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      z-index: 200;
+      overflow: hidden;
+    }
+    #mode-panel.hidden { display: none; }
+    .mode-panel-header {
+      padding: 8px 12px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      opacity: 0.55;
+    }
+    .mode-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .mode-option:hover { background: rgba(128,128,128,0.12); }
+    .mode-opt-icon {
+      font-size: 14px;
+      width: 20px;
+      text-align: center;
+      flex-shrink: 0;
+      padding-top: 1px;
+      opacity: 0.8;
+    }
+    .mode-opt-body { flex: 1; min-width: 0; }
+    .mode-opt-name { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+    .mode-opt-desc { font-size: 11px; opacity: 0.65; line-height: 1.4; }
+    .mode-opt-check {
+      color: var(--button-bg, #007acc);
+      font-size: 13px;
+      flex-shrink: 0;
+      opacity: 0;
+      padding-top: 1px;
+    }
+    .mode-option.selected .mode-opt-check { opacity: 1; }
+
+    #agent-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ff9800;
+      margin-left: 3px;
+      flex-shrink: 0;
+      animation: agent-pulse 1.4s ease-in-out infinite;
+    }
+    #agent-indicator.hidden { display: none; }
+    @keyframes agent-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.75); }
+      50%       { opacity: 1;    transform: scale(1); }
+    }
+
+    #btn-action {
+      background: var(--button-bg);
+      color: var(--button-fg);
+      border: none;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    #btn-action:not(.stop-mode):hover { background: var(--button-hover); }
+    #btn-action.stop-mode { background: #8b1a1a; color: #fff; }
+    #btn-action.stop-mode:hover { background: #c0392b; }
+    #btn-action:disabled { opacity: 0.35; cursor: default; }
+
+    /* ── Slash command menu ── */
+    #slash-menu {
+      position: absolute;
+      bottom: calc(100% + 2px);
+      left: 8px;
+      right: 8px;
+      background: var(--dropdown-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      z-index: 30;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.3);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    #slash-menu::-webkit-scrollbar { width: 4px; }
+    #slash-menu::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+    #slash-menu.hidden { display: none; }
+
+    .slash-item {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 7px 12px;
+      cursor: pointer;
+    }
+    .slash-item:hover,
+    .slash-item.selected { background: var(--user-msg-bg); }
+    .slash-cmd {
+      font-weight: bold;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      white-space: nowrap;
+      color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+    }
+    .slash-desc {
+      font-size: 11px;
+      opacity: 0.65;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .slash-badge {
+      font-size: 9px;
+      opacity: 0.5;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    /* ── Token ring (in input toolbar) ── */
+    #token-widget {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+      cursor: pointer;
+      border-radius: 5px;
+      padding: 2px 5px;
+      opacity: 0.45;
+      transition: opacity 0.12s, background 0.12s;
+    }
+    #token-widget:hover { opacity: 0.9; background: rgba(128,128,128,0.12); }
+
+    #token-ring { transform: rotate(-90deg); overflow: visible; }
+
+    .ring-bg {
+      fill: none;
+      stroke: var(--border, #444);
+      stroke-width: 3;
+    }
+
+    .ring-fill {
+      fill: none;
+      stroke: #4caf50;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-dasharray: 69.12;
+      stroke-dashoffset: 69.12;
+      transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;
+    }
+
+    #token-label {
+      font-size: 10px;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+
+    /* ── @mention file picker menu ── */
+    #mention-menu {
+      position: absolute;
+      bottom: calc(100% + 2px);
+      left: 8px;
+      right: 8px;
+      background: var(--dropdown-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      z-index: 31;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.25);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    #mention-menu::-webkit-scrollbar { width: 4px; }
+    #mention-menu::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+    #mention-menu.hidden { display: none; }
+
+    .mention-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    .mention-item:hover,
+    .mention-item.selected { background: var(--user-msg-bg); }
+    .mention-filename {
+      font-weight: bold;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      white-space: nowrap;
+    }
+    .mention-path {
+      font-size: 10px;
+      opacity: 0.5;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;
+    }
+
+    /* ── User message attachment chips (shown above message text) ── */
+    .msg-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 5px;
+    }
+    .msg-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 7px;
+      font-size: 11px;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .msg-chip-thumb {
+      width: 20px;
+      height: 20px;
+      object-fit: cover;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    /* ── Attachment chip types ── */
+    .chip-at {
+      color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+      font-weight: bold;
+      margin-right: 2px;
+    }
+    .chip-sel {
+      opacity: 0.65;
+      margin-right: 2px;
+      font-size: 13px;
+    }
+
+    /* ── Diff in permission dialog (Claude Code style) ── */
+    .perm-diff-wrap {
+      margin-bottom: 9px;
+    }
+    .perm-diff-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      opacity: 0.5;
+      margin-bottom: 4px;
+    }
+    .perm-diff-pre {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11.5px;
+      padding: 6px 0;
+      background: var(--code-bg);
+      border-radius: 5px;
+      overflow: auto;
+      max-height: 200px;
+      line-height: 1.55;
+      margin: 0;
+    }
+    .perm-diff-pre::-webkit-scrollbar { width: 4px; }
+    .perm-diff-pre::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+    .diff-del {
+      display: block;
+      background: rgba(248, 113, 113, 0.14);
+      color: #fca5a5;
+      border-left: 2.5px solid rgba(248, 113, 113, 0.55);
+      padding: 0 10px 0 8px;
+      white-space: pre;
+    }
+    .diff-add {
+      display: block;
+      background: rgba(74, 222, 128, 0.11);
+      color: #86efac;
+      border-left: 2.5px solid rgba(74, 222, 128, 0.45);
+      padding: 0 10px 0 8px;
+      white-space: pre;
+    }
+    .diff-ctx {
+      display: block;
+      padding: 0 10px 0 11px;
+      opacity: 0.45;
+      white-space: pre;
+    }
+    .diff-expand-btn {
+      display: block;
+      width: 100%;
+      padding: 3px 11px;
+      font-size: 10.5px;
+      background: rgba(128,128,128,0.06);
+      border: none;
+      border-top: 1px solid rgba(128,128,128,0.12);
+      color: inherit;
+      opacity: 0.6;
+      cursor: pointer;
+      text-align: left;
+      border-radius: 0 0 5px 5px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      letter-spacing: 0.01em;
+    }
+    .diff-expand-btn:hover { background: rgba(128,128,128,0.14); opacity: 0.85; }
+
+    /* ── Inline permission request block (appears in chat when LLM requests file change) ── */
+    .permission-request {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: var(--tool-bg);
+      border: 1px solid var(--info-border, #007acc);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .perm-req-icon { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
+    .perm-req-body { flex: 1; min-width: 0; }
+    .perm-req-title {
+      font-size: 11px;
+      font-weight: bold;
+      color: var(--vscode-inputValidation-infoBorder, #3794ff);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .perm-req-desc {
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      margin-bottom: 9px;
+      word-break: break-all;
+    }
+    .perm-req-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+    .perm-req-btn {
+      font-size: 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 4px 12px;
+      border: none;
+      font-weight: 500;
+    }
+    .perm-req-btn-yes  { background: var(--button-bg); color: var(--button-fg); }
+    .perm-req-btn-yes:hover  { background: var(--button-hover); }
+    .perm-req-btn-always { background: #1a5c1a; color: #c8ffc8; }
+    .perm-req-btn-always:hover { background: #1f6e1f; }
+    .perm-req-btn-no   { background: none; border: 1px solid var(--border); color: var(--fg); opacity: 0.7; }
+    .perm-req-btn-no:hover   { opacity: 1; }
+    .perm-req-result {
+      font-size: 12px;
+      font-style: italic;
+      opacity: 0.65;
+      margin-top: 4px;
+    }
+
+    /* ── Inline plan approval block ── */
+    .plan-approval {
+      display: flex;
+      gap: 10px;
+      margin: 4px 0;
+      background: var(--tool-bg);
+      border-left: 2px solid #6366f1;
+      border-radius: 4px;
+      padding: 10px 12px;
+    }
+    .plan-approval-body { flex: 1; min-width: 0; }
+    .plan-approval-title {
+      font-size: 11px;
+      font-weight: bold;
+      color: #a5b4fc;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .plan-approval-steps {
+      font-size: 12px;
+      white-space: pre-wrap;
+      margin-bottom: 8px;
+      opacity: 0.85;
+    }
+    .plan-approval-buttons { display: flex; gap: 6px; }
+    .plan-approval-btn {
+      font-size: 12px;
+      border-radius: 4px;
+      padding: 3px 10px;
+      cursor: pointer;
+      border: none;
+      font-weight: 500;
+    }
+    .plan-approval-btn-ok     { background: var(--button-bg); color: var(--button-fg); }
+    .plan-approval-btn-ok:hover { background: var(--button-hover); }
+    .plan-approval-btn-cancel { background: none; border: 1px solid var(--border); color: var(--fg); opacity: 0.7; }
+    .plan-approval-btn-cancel:hover { opacity: 1; }
+    .plan-approval-result { font-size: 12px; font-style: italic; opacity: 0.65; margin-top: 4px; }
+
+  </style>
+</head>
+<body>
+  <div id="top-bar">
+    <select id="model-select" title="Select model"></select>
+    <button id="btn-new" title="New session">＋</button>
+    <button id="btn-history" title="Session history">⏱</button>
+    <button id="btn-settings" title="Open settings">⚙</button>
+  </div>
+
+  <div id="messages-wrap">
+    <div id="messages"></div>
+
+    <div id="history-panel" class="hidden">
+      <div id="history-header">
+        <span>Session History</span>
+        <button id="btn-history-close" title="Close">✕</button>
+      </div>
+      <div id="history-list">
+        <div id="history-empty">No saved sessions yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="needs-input-banner" class="hidden">
+    🔔 Agent waiting for your input — respond to the dialog above
+  </div>
+
+  <div id="input-area">
+    <div id="agent-mode-panel" class="hidden">
+      <div class="mode-panel-header">Agent Mode</div>
+      <div class="agent-mode-option" data-amode="standard">
+        <span class="mode-opt-icon">↺</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Agent Loop</div>
+          <div class="mode-opt-desc">Runs tools autonomously, adapts in real-time (up to 20 turns)</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="repo-map-plan">
+        <span class="mode-opt-icon">≡</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Plan</div>
+          <div class="mode-opt-desc">Scans the repo, creates an execution plan, executes once</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="repo-map-loop">
+        <span class="mode-opt-icon">↺≡</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Plan Loop</div>
+          <div class="mode-opt-desc">Plan + automatic PDCA retry loop (up to 5 cycles)</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="react">
+        <span class="mode-opt-icon">⚙</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">ReAct</div>
+          <div class="mode-opt-desc">Thought / Action / Observation text pattern (no tool calling API)</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="debug">
+        <span class="mode-opt-icon">🔍</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Debug (3-phase)</div>
+          <div class="mode-opt-desc">Localize → Repair → Validate。仮説生成・構造検索→ピンポイント修正→テスト検証</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="chat">
+        <span class="mode-opt-icon">💬</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Chat</div>
+          <div class="mode-opt-desc">会話・質問専用。ツールなし、シンプルなQ&amp;A・壁打ち</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+      <div class="agent-mode-option" data-amode="auto">
+        <span class="mode-opt-icon">✦</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Auto</div>
+          <div class="mode-opt-desc">メッセージ内容からモードを自動判定（Chat / Loop / Debug / Plan）</div>
+        </div>
+        <span class="agent-mode-opt-check">✓</span>
+      </div>
+    </div>
+    <div id="mode-panel" class="hidden">
+      <div class="mode-panel-header">Modes</div>
+      <div class="mode-option" data-mode="ask">
+        <span class="mode-opt-icon">✋</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Ask before edits</div>
+          <div class="mode-opt-desc">The AI will ask for approval before making each edit</div>
+        </div>
+        <span class="mode-opt-check">✓</span>
+      </div>
+      <div class="mode-option" data-mode="edit">
+        <span class="mode-opt-icon">&lt;/&gt;</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Edit automatically</div>
+          <div class="mode-opt-desc">The AI will edit your selected text or the whole file</div>
+        </div>
+        <span class="mode-opt-check">✓</span>
+      </div>
+      <div class="mode-option" data-mode="plan">
+        <span class="mode-opt-icon">≡</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Plan mode</div>
+          <div class="mode-opt-desc">The AI will explore the code and present a plan before editing</div>
+        </div>
+        <span class="mode-opt-check">✓</span>
+      </div>
+      <div class="mode-option" data-mode="auto">
+        <span class="mode-opt-icon">⚡</span>
+        <div class="mode-opt-body">
+          <div class="mode-opt-name">Auto mode</div>
+          <div class="mode-opt-desc">The AI will automatically choose the best permission mode for each task</div>
+        </div>
+        <span class="mode-opt-check">✓</span>
+      </div>
+    </div>
+    <div id="slash-menu" class="hidden"></div>
+    <div id="mention-menu" class="hidden"></div>
+    <div id="input-box">
+      <div id="attachments"></div>
+      <textarea id="user-input" rows="1" placeholder="Ask anything… or type / for commands"></textarea>
+      <div id="input-toolbar">
+        <div id="toolbar-left">
+          <button id="btn-attach" class="toolbar-btn" title="Attach file">📎</button>
+          <button id="btn-slash" class="toolbar-btn" title="Command menu (/)">／</button>
+          <span id="active-file-chip" class="active-file-chip hidden">
+            <button id="btn-afc-toggle" class="afc-toggle" title="Active file included in context (click to exclude)">
+              <!-- Document icon: shown when file IS included in context -->
+              <svg class="afc-icon-doc" viewBox="0 0 10 13" width="10" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 1h5L9 3.5V11.5H1.5V1z"/>
+                <path d="M6.5 1v2.5H9"/>
+                <line x1="3" y1="6" x2="7.5" y2="6"/>
+                <line x1="3" y1="8.5" x2="7.5" y2="8.5"/>
+              </svg>
+              <!-- Eye-slash icon: shown when file is NOT included in context -->
+              <svg class="afc-icon-eye-slash" viewBox="0 0 14 11" width="14" height="11" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                <path d="M1 5.5C1 5.5 3.5 1.5 7 1.5s6 4 6 4-2.5 4-6 4-6-4-6-4z"/>
+                <circle cx="7" cy="5.5" r="1.8"/>
+                <line x1="2" y1="1" x2="12" y2="10"/>
+              </svg>
+            </button>
+            <span id="active-file-name" class="afc-name"></span>
+          </span>
+          <span id="agent-indicator" class="hidden"></span>
+        </div>
+        <div id="toolbar-right">
+          <button id="btn-agent-mode" class="toolbar-btn agent-mode-btn" title="Agent mode — click to change">Agent: Loop</button>
+          <button id="btn-mode" class="toolbar-btn mode-btn" data-mode="ask" title="Ask mode: permission required before edits. Click to change mode.">🔒 Ask</button>
+          <div id="token-widget" title="Context usage · Click to compact">
+            <svg id="token-ring" width="18" height="18" viewBox="0 0 28 28">
+              <circle class="ring-bg" cx="14" cy="14" r="11" />
+              <circle class="ring-fill" id="ring-arc" cx="14" cy="14" r="11" />
+            </svg>
+            <span id="token-label">0 / 8k</span>
+          </div>
+          <button id="btn-action" title="Send message (Enter)">↑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="file-input" multiple style="display:none" />
+
+  <script nonce="{{nonce}}" src="{{webviewUri}}"></script>
+</body>
+</html>

@@ -1,0 +1,288 @@
+{
+  "name": "local-llm-client",
+  "displayName": "Local LLM Client",
+  "description": "AI agent for VSCode powered by local LLMs via Ollama",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/local-llm-client"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "localLlm.openChat",
+        "title": "Local LLM: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "localLlm.stopAgent",
+        "title": "Local LLM: Stop Agent",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "localLlm.openSettings",
+        "title": "Local LLM: Open Settings"
+      },
+      {
+        "command": "localLlm.refreshModels",
+        "title": "Local LLM: Refresh Model List"
+      },
+      {
+        "command": "localLlm.newSession",
+        "title": "Local LLM: New Session"
+      },
+      {
+        "command": "localLlm.selectModel",
+        "title": "Local LLM: Select Model..."
+      },
+      {
+        "command": "localLlm.browseSshKey",
+        "title": "Local LLM: Browse SSH Private Key..."
+      },
+      {
+        "command": "localLlm.addRagPath",
+        "title": "Local LLM: Add RAG Index Path..."
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "localLlmSidebar",
+          "title": "Local LLM",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "localLlmSidebar": [
+        {
+          "type": "webview",
+          "id": "localLlm.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Local LLM Client",
+      "properties": {
+        "localLlm.connection.mode": {
+          "type": "string",
+          "enum": [
+            "local",
+            "ssh"
+          ],
+          "default": "local",
+          "description": "Connection mode: local Ollama or remote via SSH tunnel"
+        },
+        "localLlm.connection.local.host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Local Ollama host"
+        },
+        "localLlm.connection.local.port": {
+          "type": "number",
+          "default": 11434,
+          "description": "Local Ollama port"
+        },
+        "localLlm.connection.ssh.host": {
+          "type": "string",
+          "default": "",
+          "description": "Remote SSH host"
+        },
+        "localLlm.connection.ssh.sshPort": {
+          "type": "number",
+          "default": 22,
+          "description": "SSH port"
+        },
+        "localLlm.connection.ssh.username": {
+          "type": "string",
+          "default": "",
+          "description": "SSH username"
+        },
+        "localLlm.connection.ssh.privateKeyPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to SSH private key. [$(folder-opened) Browse...](command:localLlm.browseSshKey)"
+        },
+        "localLlm.connection.ssh.remoteOllamaPort": {
+          "type": "number",
+          "default": 11434,
+          "description": "Ollama port on the remote server"
+        },
+        "localLlm.connection.ssh.localForwardPort": {
+          "type": "number",
+          "default": 11435,
+          "description": "Local port to forward to remote Ollama"
+        },
+        "localLlm.models.chat": {
+          "type": "string",
+          "default": "gemma4:26b-a4b-it-q4_K_M",
+          "markdownDescription": "Model for chat and code generation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
+        },
+        "localLlm.models.vision": {
+          "type": "string",
+          "default": "gemma4:26b-a4b-it-q4_K_M",
+          "markdownDescription": "Model for image/vision input. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22vision%22)"
+        },
+        "localLlm.models.translate": {
+          "type": "string",
+          "default": "gemma4:26b-a4b-it-q4_K_M",
+          "markdownDescription": "Model for translation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22translate%22)"
+        },
+        "localLlm.models.compaction": {
+          "type": "string",
+          "default": "gemma4:26b-a4b-it-q4_K_M",
+          "markdownDescription": "Model for context compaction/summarization. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22compaction%22)"
+        },
+        "localLlm.tokens.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Max tokens per generation"
+        },
+        "localLlm.tokens.contextWindow": {
+          "type": "number",
+          "default": 16384,
+          "description": "Context window size (tokens). Sent to Ollama as num_ctx. Larger values increase VRAM usage (KV cache)."
+        },
+        "localLlm.agent.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "agent-loop",
+            "repo-map-loop",
+            "repo-map-plan"
+          ],
+          "enumDescriptions": [
+            "Auto: classifies each message and dispatches to Chat / Agent Loop / Debug / Plan automatically",
+            "Standard agent loop: tool-calling loop with no repo map pre-scan",
+            "Repo map + loop: scans repository structure first, then runs a full agent loop",
+            "Repo map + plan: scans repo, generates a step-by-step plan, asks for approval, then executes"
+          ],
+          "default": "auto",
+          "description": "Agent execution mode"
+        },
+        "localLlm.agent.framework": {
+          "type": "string",
+          "enum": [
+            "tool-calling",
+            "react"
+          ],
+          "default": "tool-calling",
+          "description": "Reasoning framework: tool-calling or ReAct"
+        },
+        "localLlm.agent.enableGitIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Git integration for safety commits"
+        },
+        "localLlm.agent.autoCommitBeforeChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-commit before agent modifies files"
+        },
+        "localLlm.agent.enableBehaviorVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "After fixing Python code, have the LLM generate and run a smoke test that calls event handlers directly (catches bugs invisible to a successful app launch)"
+        },
+        "localLlm.rag.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable local file RAG"
+        },
+        "localLlm.rag.indexPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Folders to index for RAG. [$(folder-opened) Add folder...](command:localLlm.addRagPath)"
+        },
+        "localLlm.outputLanguage": {
+          "type": "string",
+          "default": "Japanese",
+          "description": "Language for AI final output (e.g. Japanese, English, Chinese). Internal reasoning/thinking is always in English."
+        },
+        "localLlm.skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "Slash command name (without /)"
+              },
+              "description": {
+                "type": "string",
+                "description": "Description shown in menu"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Prompt text inserted into input when invoked"
+              }
+            },
+            "required": [
+              "command",
+              "description",
+              "prompt"
+            ]
+          },
+          "default": [],
+          "markdownDescription": "Custom slash command skills. Type `/command` in the chat input to invoke."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "localLlm.stopAgent",
+          "when": "view == localLlm.chatView && localLlm.agentRunning",
+          "group": "navigation"
+        },
+        {
+          "command": "localLlm.newSession",
+          "when": "view == localLlm.chatView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack --mode development",
+    "watch": "webpack --mode development --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext .ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "ts-loader": "^9.0.0",
+    "typescript": "^5.3.0",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.8",
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.5",
+    "simple-git": "^3.22.0"
+  }
+}

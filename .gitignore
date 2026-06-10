@@ -1,0 +1,28 @@
+# Build output
+dist/
+out/
+
+# Dependencies
+node_modules/
+
+# Packaged extension
+*.vsix
+
+# TypeScript cache
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+
+# Claude Code personal settings (shared settings.json IS committed)
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Local LLM experiments (scratch projects, not part of the extension)
+experiments/

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none';
+                 style-src {{cspSource}} 'unsafe-inline';
+                 script-src 'nonce-{{nonce}}';
+                 img-src {{cspSource}} data:;" />
+  <title>Local LLM</title>
+  <style>
+    :root {
+      --bg: var(--vscode-editor-background);
+      --fg: var(--vscode-editor-foreground);
+      --input-bg: var(--vscode-input-background);
+      --input-fg: var(--vscode-input-foreground);
+      --input-border: var(--vscode-input-border);
+      --button-bg: var(--vscode-button-background);
+      --button-fg: var(--vscode-button-foreground);
+      --button-hover: var(--vscode-button-hoverBackground);
+      --border: var(--vscode-panel-border);
+      --tool-bg: var(--vscode-editorWidget-background);
+      --user-msg-bg: var(--vscode-editor-selectionBackground);
+      --code-bg: var(--vscode-textCodeBlock-background);
+      --scrollbar: var(--vscode-scrollbarSlider-background);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      overflow: hidden;
+    }
+
+    /* ── Top bar ── */
+    #top-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #model-select {
+      flex: 1;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      border: 1px solid var(--input-border);
+      border-radius: 3px;
+      padding: 3px 6px;
+      font-size: 12px;
+    }
+
+    #btn-settings, #btn-stop, #btn-new {
+      background: none;
+      border: none;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 4px;
+      opacity: 0.7;
+      border-radius: 3px;
+    }
+    #btn-settings:hover, #btn-stop:hover, #btn-new:hover { opacity: 1; background: var(--tool-bg); }
+    #btn-stop { display: none; color: #f44; }
+    #btn-stop.visible { display: inline; }
+
+    /* ── Chat messages ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scroll-behavior: smooth;
+    }
+    #messages::-webkit-scrollbar { width: 6px; }
+    #messages::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+
+    .msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
+
+    .msg-user {
+      align-self: flex-end;
+      background: var(--user-msg-bg);
+      border-radius: 8px 8px 2px 8px;
+      padding: 8px 12px;
+      max-width: 80%;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .msg-assistant { align-self: flex-start; max-width: 100%; }
+    .msg-assistant .bubble {
+      background: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.6;
+    }
+    .msg-assistant .bubble code {
+      background: var(--code-bg);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family);
+    }
+    .msg-assistant .bubble pre {
+      background: var(--code-bg);
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    .msg-assistant .bubble pre code { background: none; padding: 0; }
+
+    .tool-call {
+      background: var(--tool-bg);
+      border-left: 3px solid var(--vscode-activityBarBadge-background, #007acc);
+      border-radius: 0 4px 4px 0;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: var(--vscode-editor-font-family);
+      margin: 4px 0;
+    }
+    .tool-call .tool-name { font-weight: bold; color: var(--vscode-symbolIcon-functionForeground, #dcdcaa); }
+    .tool-result { opacity: 0.75; font-size: 11px; margin-top: 4px; }
+    .tool-result.error { color: var(--vscode-errorForeground); }
+
+    .thinking {
+      font-style: italic;
+      opacity: 0.6;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .thinking::before { content: '⟳'; animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .phase-banner {
+      padding: 4px 8px;
+      margin: 8px 0 2px;
+      border-left: 3px solid var(--vscode-activityBarBadge-background, #0098ff);
+      opacity: 0.85;
+      font-size: 13px;
+    }
+    .phase-banner p { margin: 0; }
+
+    /* ── Attached files ── */
+    #attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 0 8px 4px;
+    }
+    .attachment-chip {
+      background: var(--tool-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .attachment-chip button {
+      background: none; border: none; cursor: pointer;
+      color: var(--fg); opacity: 0.6; font-size: 12px; padding: 0;
+    }
+
+    /* ── Input area ── */
+    #input-area {
+      border-top: 1px solid var(--border);
+      padding: 8px;
+      flex-shrink: 0;
+    }
+    #input-area.dragover { outline: 2px dashed var(--button-bg); outline-offset: -4px; }
+
+    #input-row {
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+    }
+
+    #user-input {
+      flex: 1;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      border: 1px solid var(--input-border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      resize: none;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      min-height: 36px;
+      max-height: 160px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    #user-input:focus { outline: 1px solid var(--button-bg); }
+
+    #btn-attach {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--fg);
+      cursor: pointer;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 16px;
+      opacity: 0.7;
+      align-self: flex-end;
+    }
+    #btn-attach:hover { opacity: 1; }
+
+    #btn-send {
+      background: var(--button-bg);
+      color: var(--button-fg);
+      border: none;
+      cursor: pointer;
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-weight: bold;
+      align-self: flex-end;
+      white-space: nowrap;
+    }
+    #btn-send:hover { background: var(--button-hover); }
+    #btn-send:disabled { opacity: 0.4; cursor: default; }
+
+    #hint {
+      font-size: 10px;
+      opacity: 0.45;
+      margin-top: 4px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div id="top-bar">
+    <select id="model-select" title="Select model"></select>
+    <button id="btn-stop" title="Stop agent">⏹</button>
+    <button id="btn-new" title="New session">＋</button>
+    <button id="btn-settings" title="Open settings">⚙</button>
+  </div>
+
+  <div id="messages"></div>
+
+  <div id="attachments"></div>
+
+  <div id="input-area">
+    <div id="input-row">
+      <textarea id="user-input" rows="1" placeholder="Ask anything… (Shift+Enter for newline)"></textarea>
+      <button id="btn-attach" title="Attach file">📎</button>
+      <button id="btn-send">Send</button>
+    </div>
+    <div id="hint">Enter to send · Shift+Enter for newline · Drop files to attach</div>
+  </div>
+
+  <input type="file" id="file-input" multiple style="display:none" />
+
+  <script nonce="{{nonce}}" src="{{webviewUri}}"></script>
+</body>
+</html>

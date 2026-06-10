@@ -1,0 +1,8 @@
+.vscode/**
+src/**
+node_modules/**
+.git/**
+*.map
+tsconfig*.json
+webpack.config.js
+install.bat

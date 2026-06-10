@@ -1,0 +1,88 @@
+/** Maximum characters stored per tool result in context.
+ *  Keeps head + tail so error lines at the end are preserved. */
+export const MAX_TOOL_RESULT_CHARS = 1400;
+
+/** read_file gets a larger budget: it is the agent's primary information
+ *  channel, and a targeted range-read that comes back with its middle cut out
+ *  leaves the model unable to ever see the code it asked for (observed
+ *  failure: 73-line read truncated to head+tail, dropEvent in the removed
+ *  middle, model spiralled into a retry-narration loop). */
+const READ_FILE_MAX_CHARS = 4000;
+const READ_HEAD_BUDGET = 2600;
+const READ_TAIL_BUDGET = 1100;
+
+const ERROR_LINE_RE = /error|fail(?:ed|ure)?|exception|traceback|panic|fatal/i;
+
+/**
+ * Compress a tool result before adding it to the conversation context.
+ * The UI always receives the full output — this only protects the context
+ * window from pollution.
+ *
+ * - read_file: line-aware truncation with an ACTIONABLE marker that names the
+ *   omitted line range and tells the model exactly how to view it.
+ * - run_terminal: error lines are extracted instead of blind truncation.
+ * - others: head 800 + tail 600.
+ */
+export function compressToolResult(output: string, toolName?: string): string {
+  if (toolName === 'read_file') return compressReadFileResult(output);
+
+  if (output.length <= MAX_TOOL_RESULT_CHARS) return output;
+
+  if (toolName === 'run_terminal') {
+    const lines = output.split('\n');
+    const errorLines = lines.filter(l => ERROR_LINE_RE.test(l));
+    if (errorLines.length > 0) {
+      const picked = errorLines.slice(-12).join('\n');
+      const tail = output.slice(-400);
+      const combined =
+        `[${output.length} chars — error lines extracted]\n${picked}\n…[tail]…\n${tail}`;
+      if (combined.length <= MAX_TOOL_RESULT_CHARS + 600) return combined;
+      return combined.slice(0, 800) + '\n…\n' + combined.slice(-600);
+    }
+  }
+
+  const head = output.slice(0, 800);
+  const tail = output.slice(-600);
+  return head + `\n…[${output.length - 1400} chars truncated]…\n` + tail;
+}
+
+/** Extracts the line number from a read_file output line ("  42\tcode"). */
+function parseLineNo(line: string | undefined): number | null {
+  const m = line?.match(/^\s*(\d+)\t/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function compressReadFileResult(output: string): string {
+  if (output.length <= READ_FILE_MAX_CHARS) return output;
+
+  const lines = output.split('\n');
+
+  // Keep whole lines from the head until the head budget is spent
+  let headEnd = 0;
+  let used = 0;
+  while (headEnd < lines.length && used + lines[headEnd].length + 1 <= READ_HEAD_BUDGET) {
+    used += lines[headEnd].length + 1;
+    headEnd++;
+  }
+
+  // Keep whole lines from the tail until the tail budget is spent
+  let tailStart = lines.length;
+  used = 0;
+  while (tailStart > headEnd && used + lines[tailStart - 1].length + 1 <= READ_TAIL_BUDGET) {
+    used += lines[tailStart - 1].length + 1;
+    tailStart--;
+  }
+
+  if (tailStart <= headEnd) return output; // nothing actually omitted
+
+  const firstOmitted = parseLineNo(lines[headEnd]);
+  const lastOmitted = parseLineNo(lines[tailStart - 1]);
+  const marker = (firstOmitted !== null && lastOmitted !== null)
+    ? `…[lines ${firstOmitted}–${lastOmitted} OMITTED to save context. ` +
+      `To view them, call read_file again with start_line=${firstOmitted}, end_line=${lastOmitted}` +
+      (lastOmitted - firstOmitted > 60 ? ' (split into chunks of ≤60 lines)' : '') +
+      `. This narrower re-read is allowed and does not count as a wasteful re-read.]…`
+    : `…[${tailStart - headEnd} lines omitted — re-read a narrower range with start_line/end_line to view them]…`;
+
+  return [...lines.slice(0, headEnd), marker, ...lines.slice(tailStart)].join('\n');
+}
