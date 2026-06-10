@@ -65,10 +65,34 @@ export interface ListModelsResponse {
   models: Array<{ name: string; modified_at: string; size: number }>;
 }
 
-/** Combines the caller's AbortSignal with a hard timeout so requests never hang. */
+/** Combines the caller's AbortSignal with a hard timeout so requests never hang.
+ *  Implemented manually: AbortSignal.any() requires Node 20.3+, but VSCode
+ *  1.85–1.89 ships Node 18 — using it there throws a TypeError on every
+ *  request (observed on another machine as silent empty responses). */
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException(`Request timed out after ${ms}ms`, 'TimeoutError')),
+    ms
+  );
+  (timer as { unref?: () => void }).unref?.();
+
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          controller.abort(signal.reason);
+        },
+        { once: true }
+      );
+    }
+  }
+  return controller.signal;
 }
 
 const STREAM_TIMEOUT_MS  = 10 * 60 * 1000; // 10 min — large models can be slow
