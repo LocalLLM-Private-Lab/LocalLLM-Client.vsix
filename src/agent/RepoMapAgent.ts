@@ -6,7 +6,7 @@ import type { ToolRegistry } from './ToolRegistry';
 import { FILE_EDIT_TOOLS } from './ToolRegistry';
 import { BehaviorVerifier } from './BehaviorVerifier';
 import { checkSyntaxAfterWrite } from './tools/syntaxCheck';
-import { stripThink } from './agentUtils';
+import { stripThink, LoopGuardState } from './agentUtils';
 import type { AgentEvent, AgentEventHandler } from './AgentLoop';
 import { AgentLoop } from './AgentLoop';
 import { DegenerationDetector, SelfCorrectionDetector } from './degenerationDetector';
@@ -581,9 +581,13 @@ export async function executeSteps(
   workspaceRoot: string,
   onEvent: AgentEventHandler,
   signal: AbortSignal,
-  images?: string[]
+  images?: string[],
+  /** Pass ONE instance across all executeSteps calls of a user request so the
+   *  edit-oscillation guard sees attempts from earlier plan cycles too. */
+  loopGuard?: LoopGuardState
 ): Promise<StepExecutionResult> {
   contextManager.addMessage({ role: 'user', content: initialContextMessage, images });
+  const guard = loopGuard ?? new LoopGuardState();
 
   const allErrors: string[] = [];
   let planMismatch: string | undefined;
@@ -629,16 +633,28 @@ export async function executeSteps(
     let toolCallsInStep = 0;
     let editCallsInStep = 0;
     let stepText = '';
+    // toolCallId → path of an in-flight edit call. Edits are counted on the
+    // RESULT, not the call: blocked edits (duplicate / oscillation guard) and
+    // failed ones (old_str not found) previously inflated editsApplied and
+    // satisfied the step's edit gate without changing any file.
+    const pendingEditCalls = new Map<string, string>();
     const innerOnEvent = (event: AgentEvent) => {
       if (event.type === 'done') return;
       if (event.type === 'text') stepText += event.content ?? '';
       if (event.type === 'tool_call') {
         toolCallsInStep++;
-        if (event.toolName && FILE_EDIT_TOOLS.has(event.toolName)) {
+        if (event.toolName && FILE_EDIT_TOOLS.has(event.toolName) && event.toolCallId) {
+          const p = event.toolArgs?.['path'];
+          pendingEditCalls.set(event.toolCallId, typeof p === 'string' ? p : '');
+        }
+      }
+      if (event.type === 'tool_result' && event.toolCallId && pendingEditCalls.has(event.toolCallId)) {
+        const p = pendingEditCalls.get(event.toolCallId)!;
+        pendingEditCalls.delete(event.toolCallId);
+        if (event.success === true) {
           editCallsInStep++;
           editsApplied++;
-          const p = event.toolArgs?.['path'];
-          if (typeof p === 'string') editedFiles.add(p);
+          if (p) editedFiles.add(p);
         }
       }
       // Capture tool failures — but NOT guardrail notices (read-loop blocks,
@@ -647,7 +663,8 @@ export async function executeSteps(
       // count and triggered pointless re-plans.
       if (event.type === 'tool_result' && event.success === false) {
         const content = (event.content ?? '').trim();
-        const isGuardrailNotice = /^\[(?:READ LOOP|LOOP DETECTED)\]|^Unknown tool:/.test(content);
+        const isGuardrailNotice =
+          /^\[(?:READ LOOP|LOOP DETECTED|DUPLICATE EDIT BLOCKED|EDIT OSCILLATION)\]|^Unknown tool:/.test(content);
         if (!isGuardrailNotice) {
           stepErrors.push(`[Tool error] ${truncateError(content || 'Unknown tool error')}`);
         }
@@ -671,7 +688,7 @@ export async function executeSteps(
       // declaration from attempt 1 must not be re-matched after the retry
       // (observed: a stale STEP SKIP fired right as the model was about to edit).
       const attemptTextStart = stepText.length;
-      await loop.runFromContext(innerOnEvent, signal);
+      await loop.runFromContext(innerOnEvent, signal, guard);
       if (signal.aborted) break;
       const attemptText = stepText.slice(attemptTextStart);
 
@@ -818,10 +835,13 @@ export class RepoMapAgent {
       `Full execution plan:\n${planText}`;
 
     onEvent({ type: 'thinking', content: 'Executing plan...' });
+    // One guard for BOTH cycles: cycle 2 must not be allowed to silently
+    // re-apply edits that already failed in cycle 1.
+    const loopGuard = new LoopGuardState();
     const result = await executeSteps(
       initialContext, plan.steps,
       this.client, this.contextManager, this.modelRouter,
-      this.toolRegistry, this.workspaceRoot, onEvent, signal, images
+      this.toolRegistry, this.workspaceRoot, onEvent, signal, images, loopGuard
     );
 
     // The executing agent found the plan's premise was wrong — re-plan ONCE
@@ -847,7 +867,7 @@ export class RepoMapAgent {
               `Finding that invalidated the original plan:\n${result.planMismatch}`,
             plan2.steps,
             this.client, this.contextManager, this.modelRouter,
-            this.toolRegistry, this.workspaceRoot, onEvent, signal
+            this.toolRegistry, this.workspaceRoot, onEvent, signal, undefined, loopGuard
           );
           result2.editedFiles.forEach(f => result.editedFiles.push(f));
         } else {

@@ -12,6 +12,7 @@ import {
   type ApprovalFn,
 } from './RepoMapAgent';
 import { BehaviorVerifier } from './BehaviorVerifier';
+import { LoopGuardState } from './agentUtils';
 
 const MAX_CYCLES = 5;
 
@@ -52,6 +53,9 @@ export class RepoMapLoopAgent {
     // edits itself (verification/SKIP only), but the files edited in EARLIER
     // cycles still need behavior verification.
     const allEditedFiles = new Set<string>();
+    // One loop guard for ALL cycles: a re-plan cycle must not be allowed to
+    // silently re-apply an edit variant that already failed in a previous one.
+    const loopGuard = new LoopGuardState();
 
     for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
       if (signal.aborted) { onEvent({ type: 'done' }); return; }
@@ -96,7 +100,7 @@ export class RepoMapLoopAgent {
         initialContext, plan.steps,
         this.client, this.contextManager, this.modelRouter,
         this.toolRegistry, this.workspaceRoot, onEvent, signal,
-        cycle === 1 ? images : undefined
+        cycle === 1 ? images : undefined, loopGuard
       );
       if (signal.aborted) { onEvent({ type: 'done' }); return; }
       result.editedFiles.forEach(f => allEditedFiles.add(f));
