@@ -98,6 +98,20 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
 const STREAM_TIMEOUT_MS  = 10 * 60 * 1000; // 10 min — large models can be slow
 const REQUEST_TIMEOUT_MS =  2 * 60 * 1000; // 2 min  — non-streaming (compaction etc.)
 
+/** Appends an actionable hint for known server-error patterns. */
+function apiErrorHint(status: number, errText: string): string {
+  if (status === 500 && /memory|cuda|vram|unable to load|alloc/i.test(errText)) {
+    return (
+      '\nHINT: モデルのロードに必要なメモリが不足している可能性があります。' +
+      '設定 localLlm.tokens.contextWindow を下げる（例: 8192）か、より小さいモデルを試してください。'
+    );
+  }
+  if (status === 404) {
+    return '\nHINT: モデルが見つかりません。このPCで `ollama pull <model>` を実行してください。';
+  }
+  return '';
+}
+
 export class OllamaClient {
   /** Models confirmed to not support think:true — avoids repeated 400 errors */
   private readonly noThinkModels = new Set<string>();
@@ -154,7 +168,7 @@ export class OllamaClient {
         this.noThinkModels.add(request.model);
         return this.chatStream({ ...request, think: undefined }, onDelta, signal);
       }
-      throw new Error(`Ollama API error: ${response.status} ${errText}`);
+      throw new Error(`Ollama API error: ${response.status} ${errText}${apiErrorHint(response.status, errText)}`);
     }
 
     if (!response.body) {
@@ -264,7 +278,8 @@ export class OllamaClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status} ${await response.text()}`);
+      const errText = await response.text();
+      throw new Error(`Ollama API error: ${response.status} ${errText}${apiErrorHint(response.status, errText)}`);
     }
 
     return response.json() as Promise<OllamaChatResponse>;
