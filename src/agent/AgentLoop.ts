@@ -5,7 +5,7 @@ import type { ToolRegistry } from './ToolRegistry';
 import { FILE_EDIT_TOOLS } from './ToolRegistry';
 import { DegenerationDetector, SelfCorrectionDetector } from './degenerationDetector';
 import { compressToolResult } from './toolResultUtils';
-import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage } from './agentUtils';
+import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage, stableStringify, LoopGuardState } from './agentUtils';
 
 export interface AgentEvent {
   type: 'thinking' | 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' |
@@ -69,12 +69,15 @@ export class AgentLoop {
     await this.runFromContext(onEvent, signal);
   }
 
-  /** context に既にメッセージが積まれている状態からループを開始する（ユーザーメッセージを追加しない） */
-  async runFromContext(onEvent: AgentEventHandler, signal: AbortSignal): Promise<void> {
+  /** context に既にメッセージが積まれている状態からループを開始する（ユーザーメッセージを追加しない）。
+   *  loopGuard を渡すと指紋/編集履歴が呼び出しを跨いで共有される（プランの全ステップ・
+   *  全再プランサイクルで1つを共有し、ステップ境界を跨ぐ編集の往復を検出する）。 */
+  async runFromContext(onEvent: AgentEventHandler, signal: AbortSignal, loopGuard?: LoopGuardState): Promise<void> {
     await this.contextManager.compactIfNeeded(signal);
 
     // Fingerprint-based loop detection: track (tool + args hash) of recent calls.
-    const recentFingerprints: string[] = [];
+    const guard = loopGuard ?? new LoopGuardState();
+    const recentFingerprints = guard.recentFingerprints;
     const MAX_FINGERPRINT_HISTORY = 10;
     const LOOP_THRESHOLD = 3;
 
@@ -224,8 +227,34 @@ export class AgentLoop {
       for (let j = 0; j < callData.length; j++) {
         const { call, parsedArgs } = callData[j];
 
-        // Fingerprint-based loop detection (identical tool + args)
-        const fingerprint = `${call.function.name}::${JSON.stringify(parsedArgs)}`;
+        // Edit oscillation: the candidate edit re-applies content that was
+        // ALREADY applied to this region earlier (any step, any plan cycle)
+        // and evidently did not solve the problem. Observed (qwen3 30b a3b):
+        // setTransformationMode ↔ setTransformationAnchor alternated 7 times
+        // across 2 plan cycles — each variant re-applied as soon as the
+        // per-step fingerprint history reset.
+        if (FILE_EDIT_TOOLS.has(call.function.name)) {
+          const variants = guard.editOscillationCount(call.function.name, parsedArgs);
+          if (variants > 0) {
+            blockedResults.set(j, {
+              success: false,
+              output:
+                `[EDIT OSCILLATION] This exact content was ALREADY applied to this region earlier ` +
+                `and the problem persisted. You have cycled through ${variants} variant(s) of this edit — ` +
+                `re-applying any of them CANNOT succeed; the assumption behind all of them is wrong. ` +
+                `Do NOT edit this region again until you have: ` +
+                `(1) re-read the LATEST error output and quoted the exact failing line; ` +
+                `(2) if it is an AttributeError / "has no attribute" / NameError on a library API, ` +
+                `verified the correct API name with google_search — your memory of this API is wrong.`,
+            });
+            continue;
+          }
+        }
+
+        // Fingerprint-based loop detection (identical tool + args).
+        // stableStringify: the model may emit the same args in a different key
+        // order — that must still count as the same call.
+        const fingerprint = `${call.function.name}::${stableStringify(parsedArgs)}`;
         const repeatCount = recentFingerprints.filter(f => f === fingerprint).length;
         recentFingerprints.push(fingerprint);
         if (recentFingerprints.length > MAX_FINGERPRINT_HISTORY) recentFingerprints.shift();
@@ -302,6 +331,20 @@ export class AgentLoop {
         // "read the whole function first"). Blocking it forced blind patches.
         if (FILE_EDIT_TOOLS.has(call.function.name) && typeof parsedArgs['path'] === 'string') {
           invalidateReadCounts(fileReadCounts, parsedArgs['path']);
+        }
+
+        if (FILE_EDIT_TOOLS.has(call.function.name) && result.success) {
+          guard.recordEdit(call.function.name, parsedArgs);
+          // A successful edit changes world state: re-running the same test
+          // command (or re-reading the same range) afterwards is legitimate
+          // verification, NOT a loop. Observed: the edit→test→edit→test cycle
+          // tripped [LOOP DETECTED] on the 3rd identical pytest run even
+          // though the file had changed in between, leaving the model unable
+          // to verify. Keep only edit fingerprints (duplicate-edit guard).
+          for (let k = recentFingerprints.length - 1; k >= 0; k--) {
+            const toolName = recentFingerprints[k].slice(0, recentFingerprints[k].indexOf('::'));
+            if (!FILE_EDIT_TOOLS.has(toolName)) recentFingerprints.splice(k, 1);
+          }
         }
 
         onEvent({ type: 'tool_result', content: result.output, success: result.success, toolCallId: id });
