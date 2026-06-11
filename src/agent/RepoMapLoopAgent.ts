@@ -105,6 +105,15 @@ export class RepoMapLoopAgent {
       if (signal.aborted) { onEvent({ type: 'done' }); return; }
       result.editedFiles.forEach(f => allEditedFiles.add(f));
 
+      // Attached to every re-plan input. Without it the planner (which sees
+      // ONLY repo map + task + errors, never the conversation) regenerated
+      // near-identical plans cycle after cycle (observed with qwen3).
+      const failedPlanNote =
+        `\n\n[Plan already attempted in cycle ${cycle} — it did NOT resolve the problem. ` +
+        `Do NOT produce the same plan again. Change the approach: a different hypothesis, ` +
+        `different files, or an investigation step that explains the remaining error — ` +
+        `not another edit of the same lines.]\n${planText}`;
+
       // ── Check ─────────────────────────────────────────────────────────────
       if (result.errors.length === 0 && !result.planMismatch) {
         // Behavior verification: "no tool errors" still doesn't prove the bug
@@ -117,7 +126,7 @@ export class RepoMapLoopAgent {
             const verifyResult = await verifier.run(userMessage, target, onEvent, signal);
             if (signal.aborted) { onEvent({ type: 'done' }); return; }
             if (!verifyResult.passed) {
-              errorContext = verifyResult.report;
+              errorContext = verifyResult.report + failedPlanNote;
               if (cycle < MAX_CYCLES) {
                 onEvent({ type: 'text', content: '⚠ 振る舞い検証が失敗 — 失敗内容に基づいて再プランします…' });
               }
@@ -135,12 +144,13 @@ export class RepoMapLoopAgent {
         errorContext =
           `[PLAN MISMATCH — the executing agent investigated and found the plan's premise was WRONG]\n` +
           `${result.planMismatch}` +
-          (result.errors.length > 0 ? `\n\nOther errors:\n${result.errors.join('\n')}` : '');
+          (result.errors.length > 0 ? `\n\nOther errors:\n${result.errors.join('\n')}` : '') +
+          failedPlanNote;
         if (cycle < MAX_CYCLES) {
           onEvent({ type: 'text', content: '⚠ プランの前提齟齬を検知 — 発見に基づいて再プランします…' });
         }
       } else {
-        errorContext = result.errors.join('\n');
+        errorContext = result.errors.join('\n') + failedPlanNote;
         if (cycle < MAX_CYCLES) {
           onEvent({ type: 'text', content: `⚠ ${result.errors.length} error(s) detected. Re-planning...` });
         }

@@ -1133,12 +1133,62 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-inputArea.addEventListener('dragover', (e) => { e.preventDefault(); inputArea.classList.add('dragover'); });
-inputArea.addEventListener('dragleave', () => inputArea.classList.remove('dragover'));
-inputArea.addEventListener('drop', (e) => {
+// ── ドラッグ&ドロップ / クリップボード貼り付けによる添付 ──────────────
+
+function dtHasAttachables(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  return Array.from(dt.types).some(
+    (t) => t === 'Files' || t === 'text/uri-list' || t === 'application/vnd.code.uri-list'
+  );
+}
+
+function handleDataTransfer(dt: DataTransfer | null): void {
+  if (!dt) return;
+  const files = Array.from(dt.files ?? []);
+  if (files.length > 0) {
+    files.forEach(addFile);
+    return;
+  }
+  // VSCodeエクスプローラ等からのドラッグはFileオブジェクトを持たず
+  // file:// のURIリストだけが来る。中身の読み込みは拡張側に依頼する。
+  const uriList = dt.getData('text/uri-list') || dt.getData('application/vnd.code.uri-list');
+  const uris = uriList.split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
+  if (uris.length > 0) vscode.postMessage({ type: 'attachPaths', uris });
+}
+
+// パネル全体をドロップターゲットにする(視覚ハイライトは入力欄に表示)。
+// テキスト選択のドラッグ等、添付対象がないものはデフォルト動作に任せる。
+document.addEventListener('dragover', (e) => {
+  if (!dtHasAttachables(e.dataTransfer)) return;
   e.preventDefault();
+  inputArea.classList.add('dragover');
+});
+document.addEventListener('dragleave', (e) => {
+  if (e.relatedTarget === null) inputArea.classList.remove('dragover');
+});
+document.addEventListener('drop', (e) => {
   inputArea.classList.remove('dragover');
-  Array.from(e.dataTransfer?.files ?? []).forEach(addFile);
+  if (!dtHasAttachables(e.dataTransfer)) return;
+  e.preventDefault();
+  handleDataTransfer(e.dataTransfer);
+});
+
+// クリップボードからの貼り付け(スクリーンショット画像・コピーしたファイル)。
+// ファイルを含まない通常のテキスト貼り付けはそのまま既定動作に任せる。
+inputEl.addEventListener('paste', (e: ClipboardEvent) => {
+  const fileItems = Array.from(e.clipboardData?.items ?? []).filter((it) => it.kind === 'file');
+  if (fileItems.length === 0) return;
+  e.preventDefault();
+  fileItems.forEach((it, i) => {
+    const f = it.getAsFile();
+    if (!f) return;
+    // スクリーンショットは一律 "image.png" 名で来るため一意な名前を付ける
+    const ext = (f.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg');
+    const name = f.name && f.name !== 'image.png'
+      ? f.name
+      : `clipboard-${new Date().toISOString().replace(/[:.]/g, '-')}-${i}.${ext}`;
+    addFile(new File([f], name, { type: f.type }));
+  });
 });
 
 
@@ -1227,6 +1277,9 @@ window.addEventListener('message', (event: MessageEvent) => {
           bannerDiv.innerHTML = renderMarkdown(ev['content'] as string);
           messagesEl.appendChild(bannerDiv);
           scrollToBottom();
+          // A banner means a fresh LLM generation is about to start — keep the
+          // spinner up until its first token arrives.
+          showWaiting();
           break;
         }
         case 'done':
@@ -1347,6 +1400,22 @@ window.addEventListener('message', (event: MessageEvent) => {
         mentionResults = results;
         renderMentionMenu();
       }
+      break;
+    }
+
+    case 'attachedFile': {
+      // 拡張側がfile:// URIドロップ(attachPaths)を読み込んで返した添付
+      const f = msg as { name?: string; content?: string; fileType?: string };
+      if (typeof f.name !== 'string' || typeof f.content !== 'string') break;
+      if (f.fileType === 'image') {
+        attachedFiles.push({
+          name: f.name, content: f.content, type: 'image',
+          previewUrl: `data:image/png;base64,${f.content}`,
+        });
+      } else {
+        attachedFiles.push({ name: f.name, content: f.content, type: 'text' });
+      }
+      renderAttachments();
       break;
     }
 

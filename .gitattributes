@@ -1,0 +1,15 @@
+# Store LF in the repository and auto-detect text files.
+# Kills the phantom "modified" status noise caused by core.autocrlf
+# line-ending round-trips on Windows.
+* text=auto
+
+# Windows batch scripts must keep CRLF in the working tree
+*.bat text eol=crlf
+
+# Binary assets — never normalize
+*.png binary
+*.ico binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.vsix binary

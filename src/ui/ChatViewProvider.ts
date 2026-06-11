@@ -33,6 +33,7 @@ interface WebviewMessage {
   event?: AgentEvent;
   query?: string;
   mentions?: string[];
+  uris?: string[];
 }
 
 interface StoredSession {
@@ -417,6 +418,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.runAgent(msg.text ?? '', msg.attachments ?? [], msg.mentions);
         break;
 
+      case 'attachPaths':
+        this.attachFromPaths(msg.uris ?? []);
+        break;
+
       case 'stopAgent':
         this.stopAgent();
         break;
@@ -628,6 +633,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const sessions: StoredSession[] = this.context.workspaceState.get('localLlm.sessions', []);
     const updated = sessions.filter(s => s.id !== id);
     void this.context.workspaceState.update('localLlm.sessions', updated);
+  }
+
+  private static readonly ATTACH_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+  private static readonly MAX_ATTACH_BYTES = 4 * 1024 * 1024;
+
+  /** VSCodeエクスプローラ等からのドロップはwebviewにFileオブジェクトが渡らず
+   *  file:// のURIリストだけが来る。ここで読み込んで添付チップとして返す。 */
+  private attachFromPaths(uris: string[]): void {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    for (const raw of uris.slice(0, 10)) {
+      try {
+        const uri = vscode.Uri.parse(raw, true);
+        if (uri.scheme !== 'file') continue;
+        const abs = uri.fsPath;
+        const stat = fs.statSync(abs);
+        if (!stat.isFile()) continue;
+        const name = workspaceRoot && abs.startsWith(workspaceRoot)
+          ? path.relative(workspaceRoot, abs)
+          : path.basename(abs);
+        if (stat.size > ChatViewProvider.MAX_ATTACH_BYTES) {
+          void vscode.window.showWarningMessage(`添付をスキップ: ${name} は4MBを超えています`);
+          continue;
+        }
+        const isImage = ChatViewProvider.ATTACH_IMAGE_EXTS.has(path.extname(abs).toLowerCase());
+        const content = isImage
+          ? fs.readFileSync(abs).toString('base64')
+          : fs.readFileSync(abs, 'utf8');
+        this.view?.webview.postMessage({
+          type: 'attachedFile',
+          name,
+          content,
+          fileType: isImage ? 'image' : 'text',
+        });
+      } catch {
+        // 読めないエントリ(ディレクトリ、権限なし、不正URI)は黙ってスキップ
+      }
+    }
   }
 
   private async runAgent(
