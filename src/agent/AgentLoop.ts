@@ -124,6 +124,13 @@ export class AgentLoop {
       const hasImages = messages.some(m => m.images && m.images.length > 0);
       const temperature = degenerationRetries > 0 ? 0.55 : CODING_SAMPLE_OPTIONS.temperature;
 
+      // Waiting indicator for EVERY generation start. The webview only
+      // re-shows its spinner after tool results / approvals, so generations
+      // triggered any other way (step banner, degeneration retry, empty-output
+      // retry) ran with no feedback until the first token — on local models
+      // prompt evaluation alone can take tens of seconds of "dead" UI.
+      onEvent({ type: 'thinking', content: 'Waiting for LLM response…' });
+
       let streamError: unknown = null;
       try {
         await this.client.chatStream(
@@ -333,7 +340,13 @@ export class AgentLoop {
           invalidateReadCounts(fileReadCounts, parsedArgs['path']);
         }
 
-        if (FILE_EDIT_TOOLS.has(call.function.name) && result.success) {
+        // A syntax-error edit ("Edit was APPLIED … BUT") still changed the
+        // file: record it (re-trying that exact content must oscillation-block)
+        // and clear stale fingerprints (the world DID change).
+        const editApplied =
+          FILE_EDIT_TOOLS.has(call.function.name) &&
+          (result.success || result.output.includes('Edit was APPLIED'));
+        if (editApplied) {
           guard.recordEdit(call.function.name, parsedArgs);
           // A successful edit changes world state: re-running the same test
           // command (or re-reading the same range) afterwards is legitimate
