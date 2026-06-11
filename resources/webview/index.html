@@ -7,7 +7,8 @@
         content="default-src 'none';
                  style-src {{cspSource}} 'unsafe-inline';
                  script-src 'nonce-{{nonce}}';
-                 img-src {{cspSource}} data:;" />
+                 img-src {{cspSource}} data:;
+                 font-src {{cspSource}} data:;" />
   <title>Local LLM</title>
   <style>
     :root {
@@ -556,6 +557,9 @@
       transition: opacity 0.12s, background 0.12s;
     }
     .toolbar-btn:hover { opacity: 0.9; background: rgba(128,128,128,0.12); }
+    /* TeX表示トグル: ON時は強調、OFF(プレーン表示)時は打ち消し見た目 */
+    #btn-tex.tex-on { opacity: 0.95; color: var(--button-bg); }
+    #btn-tex.tex-off { opacity: 0.35; text-decoration: line-through; }
     .mode-btn {
       font-size: 10px;
       padding: 2px 6px;
@@ -1210,6 +1214,7 @@
           <span id="agent-indicator" class="hidden"></span>
         </div>
         <div id="toolbar-right">
+          <button id="btn-tex" class="toolbar-btn" title="数式表示: TeXレンダリング中 (クリックでプレーン表示)">∑</button>
           <button id="btn-agent-mode" class="toolbar-btn agent-mode-btn" title="Agent mode — click to change">Agent: Loop</button>
           <button id="btn-mode" class="toolbar-btn mode-btn" data-mode="ask" title="Ask mode: permission required before edits. Click to change mode.">🔒 Ask</button>
           <div id="token-widget" title="Context usage · Click to compact">
