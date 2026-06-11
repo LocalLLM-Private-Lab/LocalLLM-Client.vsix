@@ -651,7 +651,12 @@ export async function executeSteps(
       if (event.type === 'tool_result' && event.toolCallId && pendingEditCalls.has(event.toolCallId)) {
         const p = pendingEditCalls.get(event.toolCallId)!;
         pendingEditCalls.delete(event.toolCallId);
-        if (event.success === true) {
+        // "Edit was APPLIED … BUT it introduced a SYNTAX ERROR" is still an
+        // applied edit: the file DID change. Treating it as no-edit made the
+        // completion gate claim "no edit was applied" (false) and dropped the
+        // file from the final py_compile sweep.
+        const applied = event.success === true || (event.content ?? '').includes('Edit was APPLIED');
+        if (applied) {
           editCallsInStep++;
           editsApplied++;
           if (p) editedFiles.add(p);
@@ -852,7 +857,8 @@ export class RepoMapAgent {
         `Original task: ${userMessage}\n\n` +
         `During execution, the agent investigated and found the original plan's premise was WRONG:\n` +
         `${result.planMismatch}\n\n` +
-        `Create a corrected plan based on this finding.`;
+        `Create a corrected plan based on this finding.\n\n` +
+        `[The original plan, for reference — its premise was wrong, do NOT repeat it:]\n${planText}`;
       const plan2 = await createPlan(
         this.client, this.modelRouter, repoMap, replanTask, signal, undefined, onEvent, this.outputLanguage
       );

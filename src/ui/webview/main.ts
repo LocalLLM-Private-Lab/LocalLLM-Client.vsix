@@ -1227,6 +1227,9 @@ window.addEventListener('message', (event: MessageEvent) => {
           bannerDiv.innerHTML = renderMarkdown(ev['content'] as string);
           messagesEl.appendChild(bannerDiv);
           scrollToBottom();
+          // A banner means a fresh LLM generation is about to start — keep the
+          // spinner up until its first token arrives.
+          showWaiting();
           break;
         }
         case 'done':
