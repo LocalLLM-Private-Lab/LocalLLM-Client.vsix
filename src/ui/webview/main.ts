@@ -3,6 +3,8 @@
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
@@ -36,6 +38,73 @@ function renderMarkdown(text: string): string {
   return DOMPurify.sanitize(marked.parse(text) as string);
 }
 
+// ── TeX math display (KaTeX) ──────────────────────────────────────────────────
+// 方針: LLMとの往復は生のTeXのまま(プレーン強制はモデルの数式理解を損なう)。
+// 描画だけをwebview側で切り替える。markedは \( \) のバックスラッシュや
+// 数式中の _ をmarkdown記法として破壊するため、コード外の数式を先に
+// プレースホルダへ退避 → markdown変換 → KaTeX出力で復元する。
+
+/** 数式表示ON/OFF(セッションを跨いで保持) */
+let texRender =
+  ((vscode.getState() as Record<string, unknown> | undefined)?.['texRender'] ?? true) === true;
+
+/** 確定済みmd-containerの元テキスト — トグル時にここから再レンダリングする */
+const mdSources = new Map<HTMLElement, string>();
+
+// markdownに干渉しない私用領域(PUA)文字をプレースホルダの印に使う
+const MATH_PH = String.fromCharCode(0xe000);
+// 単独$は通貨等の誤検知があるため「前後が空白でない+数式らしい中身」だけ拾う。
+// 数式らしい中身 = 数式文字(\^_{}=)を含む、または $E$ $m$ $x1$ のような
+// 短い変数参照(3文字以下の英数字。"$5 and $10"は中身の空白で弾かれる)
+const MATHISH_RE = /[\\^_{}=]/;
+const SHORT_VAR_RE = /^[\p{L}\p{N}]{1,3}$/u;
+
+function maskMath(text: string, out: Array<{ src: string; display: boolean }>): string {
+  const stash = (src: string, display: boolean): string => {
+    out.push({ src, display });
+    return `${MATH_PH}${out.length - 1}${MATH_PH}`;
+  };
+  // コードフェンス/インラインコードの中は触らない
+  return text
+    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
+    .map((seg, idx) => {
+      if (idx % 2 === 1) return seg;
+      return seg
+        .replace(/\$\$([\s\S]+?)\$\$/g, (_, src: string) => stash(src, true))
+        .replace(/\\\[([\s\S]+?)\\\]/g, (_, src: string) => stash(src, true))
+        .replace(/\\\((.+?)\\\)/g, (_, src: string) => stash(src, false))
+        .replace(/\$([^$\n]+?)\$/g, (m, src: string) =>
+          !/^\s|\s$/.test(src) && (MATHISH_RE.test(src) || SHORT_VAR_RE.test(src))
+            ? stash(src, false)
+            : m
+        );
+    })
+    .join('');
+}
+
+/** markdown + KaTeX。KaTeX出力はサニタイズ後に挿入するが、入力はテキスト由来で
+ *  throwOnError:false かつ trust:false(\href等の危険コマンド無効)なので安全。 */
+function renderMarkdownWithMath(text: string): string {
+  const mathParts: Array<{ src: string; display: boolean }> = [];
+  const masked = maskMath(text, mathParts);
+  const html = DOMPurify.sanitize(marked.parse(masked) as string);
+  return html.replace(new RegExp(`${MATH_PH}(\\d+)${MATH_PH}`, 'g'), (whole, i: string) => {
+    const m = mathParts[Number(i)];
+    if (!m) return whole;
+    try {
+      return katex.renderToString(m.src, { displayMode: m.display, throwOnError: false });
+    } catch {
+      return escapeHtml(m.src);
+    }
+  });
+}
+
+/** 確定したmd-containerを現在の表示モードで(再)レンダリングする */
+function renderMdContainer(container: HTMLElement, text: string): void {
+  container.innerHTML = texRender ? renderMarkdownWithMath(text) : renderMarkdown(text);
+  addCopyButtons(container);
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const messagesEl = document.getElementById('messages')!;
 const inputEl = document.getElementById('user-input') as HTMLTextAreaElement;
@@ -66,6 +135,7 @@ const activeFileNameEl = document.getElementById('active-file-name')!;
 const btnAfcToggle = document.getElementById('btn-afc-toggle') as HTMLButtonElement;
 const btnAgentMode = document.getElementById('btn-agent-mode') as HTMLButtonElement;
 const agentModePanel = document.getElementById('agent-mode-panel')!;
+const btnTex = document.getElementById('btn-tex') as HTMLButtonElement;
 let sendActiveFile = true;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -234,16 +304,16 @@ function flushMarkdown() {
   if (mdRenderTimer) { clearTimeout(mdRenderTimer); mdRenderTimer = null; }
   if (currentTextBuffer) {
     const container = getOrCreateMdContainer();
-    container.innerHTML = renderMarkdown(currentTextBuffer);
-    addCopyButtons(container);
+    mdSources.set(container, currentTextBuffer);
+    renderMdContainer(container, currentTextBuffer);
   }
 }
 
 function renderAssistantMarkdown(bubble: HTMLElement, text: string) {
   const container = document.createElement('div');
   container.className = 'md-content';
-  container.innerHTML = renderMarkdown(text);
-  addCopyButtons(container);
+  mdSources.set(container, text);
+  renderMdContainer(container, text);
   bubble.appendChild(container);
 }
 
@@ -617,6 +687,7 @@ function autoResizeInput() {
 
 function clearChatUI() {
   messagesEl.innerHTML = '';
+  mdSources.clear();
   currentAssistantBubble = null;
   thinkState = 'normal';
   thinkTagBuffer = '';
@@ -1126,6 +1197,25 @@ function applyAgentMode(mode: string) {
 modelSelect.addEventListener('change', () =>
   vscode.postMessage({ type: 'setModel', model: modelSelect.value })
 );
+
+// ── TeX⇔プレーン表示トグル ────────────────────────────────────────────────
+// 会話履歴(LLMに渡る内容)は変えず、確定済みメッセージを元テキストから
+// 再レンダリングして見た目だけを切り替える。
+function setTexRender(on: boolean): void {
+  texRender = on;
+  const prev = (vscode.getState() as Record<string, unknown> | undefined) ?? {};
+  vscode.setState({ ...prev, texRender: on });
+  btnTex.classList.toggle('tex-on', on);
+  btnTex.classList.toggle('tex-off', !on);
+  btnTex.title = on
+    ? '数式表示: TeXレンダリング中 (クリックでプレーン表示)'
+    : '数式表示: プレーン (クリックでTeXレンダリング)';
+  for (const [el, src] of mdSources) {
+    if (el.isConnected) renderMdContainer(el, src);
+  }
+}
+btnTex.addEventListener('click', () => setTexRender(!texRender));
+setTexRender(texRender);
 
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
