@@ -51,6 +51,21 @@ const webviewConfig = {
         exclude: /node_modules/,
         use: [{ loader: 'ts-loader', options: { configFile: 'tsconfig.webview.json' } }],
       },
+      {
+        // KaTeX CSS: injected as <style> at runtime (CSP allows 'unsafe-inline').
+        // Only woff2 fonts are inlined — Chromium always picks woff2 from the
+        // src() list, so the woff/ttf fallback URLs are left unresolved on
+        // purpose to keep the bundle small.
+        test: /\.css$/,
+        use: [
+          'style-loader',
+          { loader: 'css-loader', options: { url: { filter: (url) => url.endsWith('.woff2') } } },
+        ],
+      },
+      {
+        test: /\.woff2$/,
+        type: 'asset/inline',
+      },
     ],
   },
   devtool: 'nosources-source-map',

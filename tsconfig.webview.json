@@ -11,6 +11,6 @@
     "sourceMap": true,
     "moduleResolution": "node"
   },
-  "include": ["src/ui/webview/main.ts"],
+  "include": ["src/ui/webview/main.ts", "src/ui/webview/globals.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

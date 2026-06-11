@@ -89,6 +89,27 @@ export class AgentLoop {
     let degenerationRetries = 0;
     let emptyOutputNudged = false;
 
+    // "Announce-then-stop" rescue: gemma4/qwen3 often end a turn with a
+    // DECLARATION of the next action ("…を検索します。") instead of the tool
+    // call itself. Without a guard that counts as a final answer and the
+    // loop exits — observed run where the USER had to type "よろしく/頑張って"
+    // after every single search to keep the agent going. Budget resets after
+    // a real tool call so a long run can be rescued more than once;
+    // MAX_ITERATIONS still caps the whole loop.
+    const MAX_ACTION_NUDGES = 2;
+    let actionNudges = 0;
+    const toolNames = this.toolRegistry.toOllamaTools().map(t => t.function.name).join('|');
+    // Pseudo tool call leaked into TEXT (e.g. `call:web_search{query:…}` or
+    // chat-template fragments like <tool_call> / <|tool…) — it was never
+    // parsed as a real call, so treating it as a final answer is wrong.
+    const pseudoToolCallRe = new RegExp(
+      `(?:call:\\s*(?:${toolNames})\\b|\\b(?:${toolNames})\\s*\\{|<tool_call|<\\|tool)`, 'i');
+    // Future-intent tail: a specific action noun + します/を行います at the very
+    // end of the reply. Kept narrow (検索します etc., not bare します) so real
+    // final answers like "…をおすすめします。" don't false-positive.
+    const intentTailRe =
+      /(?:検索|調査|確認|実行|取得|分析|特定|送信|読み込み|呼び出し)(?:します|を行います|してみます|を実行します)[。．.\s]*$|(?:探します|調べます|試します|見てみます)[。．.\s]*$|\b(?:let me|i(?:'ll| will)|going to)\s+(?:search|look|check|run|investigate|fetch|read|try)\b[\s\S]{0,100}$/i;
+
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       if (signal.aborted) {
         onEvent({ type: 'done' });
@@ -216,9 +237,40 @@ export class AgentLoop {
       });
 
       if (!toolCalls || toolCalls.length === 0) {
+        if (actionNudges < MAX_ACTION_NUDGES) {
+          let nudge: { message: string; banner: string } | null = null;
+          if (pseudoToolCallRe.test(cleanContent)) {
+            nudge = {
+              message:
+                '[MALFORMED TOOL CALL] 直前の応答にはツール呼び出しらしきテキストが含まれていますが、' +
+                '本文として出力されたためツールは実行されていません。' +
+                'ツールは本文に書かず、正規のtool call形式で呼び出してください。',
+              banner: '\n⚠ ツールコールがテキストとして出力されました — 再試行します。\n',
+            };
+          } else if (intentTailRe.test(cleanContent)) {
+            nudge = {
+              message:
+                '[NO ACTION] 直前の応答は「これから何をするか」の宣言で終わっていますが、' +
+                'ツールは呼び出されていません。宣言は実行ではありません。' +
+                '今すぐそのツールを呼び出してください。' +
+                'すでに結論を出せる状態なら、宣言ではなく最終回答そのものを書いてください。',
+              banner: '\n⚠ 宣言のみで終了 — ツール実行を促して再試行します。\n',
+            };
+          }
+          if (nudge) {
+            actionNudges++;
+            this.contextManager.addMessage({ role: 'user', content: nudge.message });
+            onEvent({ type: 'text', content: nudge.banner });
+            continue;
+          }
+        }
         onEvent({ type: 'done' });
         return;
       }
+
+      // Real tool activity: refill the rescue budget — a later
+      // announce-then-stop in the same long run should be caught too.
+      actionNudges = 0;
 
       // Parse args and assign stable IDs up front
       const callData = parseToolCalls(toolCalls);
