@@ -59,6 +59,14 @@ export function compressToolResult(output: string, toolName?: string): string {
       if (combined.length <= MAX_TOOL_RESULT_CHARS + 600) return combined;
       return combined.slice(0, 800) + '\n…\n' + combined.slice(-600);
     }
+    // Large output, no error lines: the middle is gone — steer the model to
+    // filter at the SOURCE instead of re-running the same command blindly.
+    return (
+      output.slice(0, 800) +
+      `\n…[${output.length - 1400} chars truncated — output is large; if you need the omitted part, ` +
+      `re-run with a filter, e.g. | Select-String "keyword" or | Select-Object -First 50]…\n` +
+      output.slice(-600)
+    );
   }
 
   const head = output.slice(0, 800);

@@ -1,5 +1,40 @@
 import type { ToolDefinition, ToolResult } from '../ToolRegistry';
 
+/** Same-URL re-fetches are common when the model cross-checks an API doc it
+ *  read earlier in the session. Serve those from a TTL cache: faster, no
+ *  network flakiness mid-run, and the content stays consistent between the
+ *  two reads. JSON responses are NOT cached (weather/API data is dynamic). */
+const CACHE_TTL_MS = 30 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 20;
+const pageCache = new Map<string, { at: number; text: string }>();
+
+function cacheGet(url: string): { text: string; ageMin: number } | null {
+  const hit = pageCache.get(url);
+  if (!hit) return null;
+  const age = Date.now() - hit.at;
+  if (age > CACHE_TTL_MS) {
+    pageCache.delete(url);
+    return null;
+  }
+  return { text: hit.text, ageMin: Math.round(age / 60000) };
+}
+
+function cachePut(url: string, text: string): void {
+  if (pageCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = pageCache.keys().next().value;
+    if (oldest !== undefined) pageCache.delete(oldest);
+  }
+  pageCache.set(url, { at: Date.now(), text });
+}
+
+function clip(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text || '(empty page)';
+  return (
+    text.slice(0, maxChars) +
+    `\n\n[truncated — ${text.length} total chars; increase max_chars to read more]`
+  );
+}
+
 export const FetchUrlTool: ToolDefinition = {
   name: 'fetch_url',
   description:
@@ -24,6 +59,16 @@ export const FetchUrlTool: ToolDefinition = {
     const url = args['url'];
     const maxChars =
       typeof args['max_chars'] === 'number' ? Math.min(args['max_chars'], 12000) : 6000;
+
+    const cached = cacheGet(url);
+    if (cached) {
+      return {
+        success: true,
+        output:
+          `[cached copy fetched ${cached.ageMin} min ago — identical to the earlier fetch]\n` +
+          clip(cached.text, maxChars),
+      };
+    }
 
     try {
       const res = await fetch(url, {
@@ -57,15 +102,8 @@ export const FetchUrlTool: ToolDefinition = {
       // HTML tag stripping would only mangle them.
       const text = isJson ? body : extractText(body);
 
-      if (text.length > maxChars) {
-        return {
-          success: true,
-          output:
-            text.slice(0, maxChars) +
-            `\n\n[truncated — ${text.length} total chars; increase max_chars to read more]`,
-        };
-      }
-      return { success: true, output: text || '(empty page)' };
+      if (!isJson && text) cachePut(url, text);
+      return { success: true, output: clip(text, maxChars) };
     } catch (err) {
       return { success: false, output: `Fetch failed: ${String(err)}` };
     }

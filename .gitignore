@@ -26,3 +26,6 @@ Thumbs.db
 
 # Local LLM experiments (scratch projects, not part of the extension)
 experiments/
+
+# Internal spec documents (generated locally, not for the repo)
+docs/spec/
