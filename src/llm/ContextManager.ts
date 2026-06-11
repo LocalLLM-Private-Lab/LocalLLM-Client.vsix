@@ -1,8 +1,11 @@
 import type { OllamaClient } from './OllamaClient';
 import type { OllamaMessage } from './OllamaClient';
 import type { OllamaConfig } from '../config/schema';
+import { FILE_EDIT_TOOLS } from '../agent/ToolRegistry';
 
 const COMPACTION_THRESHOLD = 0.85; // コンテキスト使用率がこれを超えたら圧縮
+
+const ERRORISH_RE = /error|fail(?:ed|ure)?|exception|traceback|構文エラー|失敗/i;
 
 /**
  * 会話履歴を管理し、コンテキストウィンドウが溢れそうになったら
@@ -11,6 +14,14 @@ const COMPACTION_THRESHOLD = 0.85; // コンテキスト使用率がこれを超
 export class ContextManager {
   private messages: OllamaMessage[] = [];
   private systemPrompt: string | null = null;
+
+  // ── コンパクション耐性のセッション状態 ──────────────────────
+  // LLM要約は「何を編集したか」「元のタスク」のような構造的事実を落とす
+  // ことがある(要約モデル自身もローカルの小型モデルのため)。圧縮を跨いで
+  // 保持すべき事実は機械的に抽出し、要約とは別に決定論的なブロックとして
+  // 再注入する。
+  private originalTask: string | null = null;
+  private editedFiles = new Set<string>();
 
   constructor(
     private config: OllamaConfig,
@@ -36,6 +47,8 @@ export class ContextManager {
 
   clear(): void {
     this.messages = [];
+    this.originalTask = null;
+    this.editedFiles.clear();
   }
 
   exportMessages(): OllamaMessage[] {
@@ -74,12 +87,61 @@ export class ContextManager {
 
     if (toSummarize.length === 0) return false;
 
+    this.harvestSessionState(toSummarize);
     const summaryText = await this.summarize(toSummarize, signal);
     this.messages = [
-      { role: 'system', content: `[Previous conversation summary]\n${summaryText}` },
+      {
+        role: 'system',
+        content: `[Previous conversation summary]\n${summaryText}${this.buildSessionStateBlock(toSummarize)}`,
+      },
       ...toKeep,
     ];
     return true;
+  }
+
+  /** 圧縮で消える領域から、要約に任せられない構造的事実を機械抽出する。
+   *  editedFiles はインスタンスに蓄積されるため2回目以降の圧縮でも失われない。 */
+  private harvestSessionState(dropped: OllamaMessage[]): void {
+    if (this.originalTask === null) {
+      const firstUser = dropped.find(
+        (m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim() !== ''
+      );
+      if (firstUser) this.originalTask = firstUser.content.slice(0, 400);
+    }
+    for (const m of dropped) {
+      if (m.role !== 'assistant' || !m.tool_calls) continue;
+      for (const tc of m.tool_calls) {
+        if (!FILE_EDIT_TOOLS.has(tc.function?.name ?? '')) continue;
+        let args: unknown = tc.function.arguments;
+        if (typeof args === 'string') {
+          try { args = JSON.parse(args); } catch { continue; }
+        }
+        const p = (args as Record<string, unknown> | null)?.['path'];
+        if (typeof p === 'string') this.editedFiles.add(p);
+      }
+    }
+  }
+
+  /** 要約の後ろに付ける決定論的なセッション状態ブロック。
+   *  直近エラーだけは「今回消える領域」から取る(古いエラーは解決済みの可能性が高い)。 */
+  private buildSessionStateBlock(dropped: OllamaMessage[]): string {
+    const lines: string[] = [];
+    if (this.originalTask) lines.push(`Original task (verbatim head): ${this.originalTask}`);
+    if (this.editedFiles.size > 0) {
+      lines.push(`Files edited so far: ${[...this.editedFiles].join(', ')}`);
+    }
+    const errors = dropped
+      .filter((m) => m.role === 'tool' && typeof m.content === 'string' && ERRORISH_RE.test(m.content))
+      .slice(-2)
+      .map((m) => `- ${m.content.replace(/\s+/g, ' ').slice(0, 240)}`);
+    if (errors.length > 0) {
+      lines.push('Recent tool errors (may already be resolved — verify before acting):', ...errors);
+    }
+    if (lines.length === 0) return '';
+    return (
+      '\n\n[Session state — extracted mechanically from the compacted history; ' +
+      'more reliable than the summary above]\n' + lines.join('\n')
+    );
   }
 
   private async summarize(
