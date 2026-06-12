@@ -44,6 +44,28 @@
       overflow: hidden;
     }
 
+    /* ── Boot loading overlay (webview.js 実行完了までの明示表示) ── */
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: var(--bg);
+      font-size: 12px;
+      opacity: 0.85;
+    }
+    #boot-overlay .boot-spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(128, 128, 128, 0.25);
+      border-top-color: var(--vscode-activityBarBadge-background, #007acc);
+      animation: orbit-glow 0.9s linear infinite;
+    }
+
     /* ── Top bar ── */
     #top-bar {
       display: flex;
@@ -933,28 +955,120 @@
     }
     .perm-diff-pre::-webkit-scrollbar { width: 4px; }
     .perm-diff-pre::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
-    .diff-del {
-      display: block;
-      background: rgba(248, 113, 113, 0.14);
-      color: #fca5a5;
-      border-left: 2.5px solid rgba(248, 113, 113, 0.55);
-      padding: 0 10px 0 8px;
+    /* 行番号ガター+/-マーカー付きdiff行 (テーマのdiffEditor色に追従) */
+    .diff-row {
+      display: flex;
       white-space: pre;
+      line-height: 1.6;
+      min-width: max-content;
     }
-    .diff-add {
-      display: block;
-      background: rgba(74, 222, 128, 0.11);
-      color: #86efac;
-      border-left: 2.5px solid rgba(74, 222, 128, 0.45);
-      padding: 0 10px 0 8px;
-      white-space: pre;
+    .diff-gut {
+      flex: 0 0 auto;
+      padding: 0 5px 0 2px;
+      text-align: right;
+      color: var(--vscode-editorLineNumber-foreground, #858585);
+      font-size: 0.9em;
+      user-select: none;
     }
-    .diff-ctx {
-      display: block;
-      padding: 0 10px 0 11px;
+    .diff-sign {
+      flex: 0 0 1.4ch;
+      text-align: center;
+      font-weight: 600;
+      user-select: none;
+    }
+    .diff-line-text { padding-right: 12px; }
+    .diff-row.diff-add {
+      background: var(--vscode-diffEditor-insertedLineBackground,
+                  var(--vscode-diffEditor-insertedTextBackground, rgba(74, 222, 128, 0.13)));
+    }
+    .diff-row.diff-add .diff-sign { color: var(--vscode-gitDecoration-addedResourceForeground, #4ade80); }
+    .diff-row.diff-del {
+      background: var(--vscode-diffEditor-removedLineBackground,
+                  var(--vscode-diffEditor-removedTextBackground, rgba(248, 113, 113, 0.14)));
+    }
+    .diff-row.diff-del .diff-sign { color: var(--vscode-gitDecoration-deletedResourceForeground, #f87171); }
+    .diff-row.diff-ctx { opacity: 0.65; }
+    .diff-row.diff-gap {
+      justify-content: center;
       opacity: 0.45;
-      white-space: pre;
+      font-style: italic;
+      font-size: 0.9em;
+      padding: 1px 0;
+      user-select: none;
     }
+    .diff-zoom-btn {
+      float: right;
+      background: none;
+      border: none;
+      color: inherit;
+      font-size: 12px;
+      line-height: 1;
+      padding: 0 2px;
+      opacity: 0.55;
+      cursor: pointer;
+    }
+    .diff-zoom-btn:hover { opacity: 1; }
+    .perm-diff-pre { cursor: zoom-in; }
+
+    /* ── Diff拡大表示モーダル ── */
+    #diff-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .diff-modal-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 100%;
+      height: 100%;
+      max-width: 1100px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+    .diff-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .diff-modal-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .diff-modal-close {
+      background: none;
+      border: none;
+      color: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+    .diff-modal-close:hover { opacity: 1; }
+    .diff-modal-body {
+      flex: 1;
+      overflow: auto;
+      margin: 0;
+      padding: 8px 4px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 12.5px;
+    }
+    .diff-modal-body::-webkit-scrollbar { width: 8px; height: 8px; }
+    .diff-modal-body::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
     .diff-expand-btn {
       display: block;
       width: 100%;
@@ -1064,8 +1178,11 @@
   </style>
 </head>
 <body>
+  <div id="boot-overlay"><div class="boot-spinner"></div>Loading…</div>
   <div id="top-bar">
-    <select id="model-select" title="Select model"></select>
+    <select id="model-select" title="Select model">
+      <option value="" disabled selected>Loading models…</option>
+    </select>
     <button id="btn-new" title="New session">＋</button>
     <button id="btn-history" title="Session history">⏱</button>
     <button id="btn-settings" title="Open settings">⚙</button>
