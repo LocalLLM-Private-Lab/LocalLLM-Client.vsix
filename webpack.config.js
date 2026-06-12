@@ -40,6 +40,9 @@ const webviewConfig = {
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'webview.js',
+    // KaTeX等の遅延import()チャンク。publicPathはデフォルトの'auto'のままに
+    // すること — webview URI(currentScriptのsrc)基準でdist/から解決される。
+    chunkFilename: 'webview.[name].js',
   },
   resolve: {
     extensions: ['.ts', '.js'],

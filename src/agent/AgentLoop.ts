@@ -17,7 +17,8 @@ export interface AgentEvent {
   toolCallId?: string;
   success?: boolean;
   description?: string;
-  diff?: string;
+  /** 承認ダイアログ用の構造化diff(ui/diffUtils.DiffLineと同形。レイヤ分離のため構造的に定義) */
+  diffLines?: Array<{ kind: 'add' | 'del' | 'ctx' | 'gap'; oldNo?: number; newNo?: number; text: string }>;
   cycle?: number;
 }
 
