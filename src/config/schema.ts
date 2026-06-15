@@ -14,6 +14,7 @@ export interface SshConnectionConfig {
 
 export interface ModelConfig {
   chat: string;
+  coder: string;
   vision: string;
   translate: string;
   compaction: string;
@@ -53,4 +54,4 @@ export interface OllamaConfig {
   outputLanguage: string;
 }
 
-export type TaskType = 'chat' | 'vision' | 'translate' | 'compaction';
+export type TaskType = 'chat' | 'coder' | 'vision' | 'translate' | 'compaction';

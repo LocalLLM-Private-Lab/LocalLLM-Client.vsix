@@ -73,7 +73,7 @@ export class AgentLoop {
    *  loopGuard を渡すと指紋/編集履歴が呼び出しを跨いで共有される（プランの全ステップ・
    *  全再プランサイクルで1つを共有し、ステップ境界を跨ぐ編集の往復を検出する）。 */
   async runFromContext(onEvent: AgentEventHandler, signal: AbortSignal, loopGuard?: LoopGuardState): Promise<void> {
-    await this.contextManager.compactIfNeeded(signal);
+    await this.contextManager.compactIfNeeded(signal, (m) => onEvent({ type: 'thinking', content: m }));
 
     // Fingerprint-based loop detection: track (tool + args hash) of recent calls.
     const guard = loopGuard ?? new LoopGuardState();
@@ -154,14 +154,15 @@ export class AgentLoop {
 
       let streamError: unknown = null;
       try {
+        const model = this.modelRouter.getModelForImages(hasImages, 'coder');
         await this.client.chatStream(
           {
-            model: this.modelRouter.getModelForImages(hasImages),
+            model,
             messages,
             tools: this.toolRegistry.toOllamaTools(),
             ...(this.thinkOverride !== undefined
               ? { think: this.thinkOverride }
-              : (this.modelRouter.needsThinkParam() && { think: true })),
+              : (this.modelRouter.needsThinkParam(model) && { think: true })),
             options: { ...CODING_SAMPLE_OPTIONS, temperature },
           },
           onDelta,

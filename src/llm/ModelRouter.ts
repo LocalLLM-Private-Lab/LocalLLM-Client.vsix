@@ -28,6 +28,11 @@ export class ModelRouter {
     return this.config.models.chat;
   }
 
+  /** コード編集・エージェント実行用モデル。未設定なら chat にフォールバック。 */
+  getCoderModel(): string {
+    return this.config.models.coder || this.config.models.chat;
+  }
+
   /** Configured per-generation token budget (tokens.maxTokens) */
   getMaxTokens(): number {
     return this.config.tokens.maxTokens;
@@ -38,22 +43,28 @@ export class ModelRouter {
   }
 
   /**
-   * Returns the vision model when images are present, otherwise the chat model.
-   * Falls back to the chat model if vision is not separately configured.
+   * Returns the model for the given role, with vision taking priority when
+   * images are present. role='coder' resolves to the coder model (falling back
+   * to chat when unset); role='chat' (default) resolves to the chat model.
    */
-  getModelForImages(hasImages: boolean): string {
+  getModelForImages(hasImages: boolean, role: 'chat' | 'coder' = 'chat'): string {
     if (hasImages && this.config.models.vision) {
       return this.config.models.vision;
+    }
+    if (role === 'coder' && this.config.models.coder) {
+      return this.config.models.coder;
     }
     return this.config.models.chat;
   }
 
   /**
-   * Returns true when the current chat model needs `think: true` sent as a
-   * top-level Ollama request parameter to enable reasoning tokens.
+   * Returns true when the given model (defaults to the chat model) needs
+   * `think: true` sent as a top-level Ollama request parameter to enable
+   * reasoning tokens. Pass the actually-resolved model so coder generations
+   * are evaluated against the coder model rather than chat.
    */
-  needsThinkParam(): boolean {
-    const name = this.getChatModel();
+  needsThinkParam(model?: string): boolean {
+    const name = model ?? this.getChatModel();
     return THINK_PARAM_PATTERNS.some(re => re.test(name));
   }
 }

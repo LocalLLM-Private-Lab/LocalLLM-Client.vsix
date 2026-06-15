@@ -25,6 +25,7 @@ export class ConfigManager {
       models: {
         // Fallbacks mirror the defaults declared in package.json `contributes.configuration`
         chat: cfg.get<string>('models.chat', 'gemma4:26b-a4b-it-q4_K_M'),
+        coder: cfg.get<string>('models.coder', ''),
         vision: cfg.get<string>('models.vision', 'gemma4:26b-a4b-it-q4_K_M'),
         translate: cfg.get<string>('models.translate', 'gemma4:26b-a4b-it-q4_K_M'),
         compaction: cfg.get<string>('models.compaction', 'gemma4:26b-a4b-it-q4_K_M'),

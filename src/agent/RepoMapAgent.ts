@@ -387,7 +387,7 @@ async function attemptPlan(
   try {
     await client.chatStream(
       {
-        model: modelRouter.getChatModel(),
+        model: modelRouter.getCoderModel(),
         messages: [
           { role: 'system', content: buildPlanSystemPrompt(outputLanguage) },
           { role: 'user', content: userContent, images },

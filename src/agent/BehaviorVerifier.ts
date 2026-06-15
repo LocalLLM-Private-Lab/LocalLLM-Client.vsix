@@ -199,7 +199,7 @@ export class BehaviorVerifier {
     try {
       await this.client.chatStream(
         {
-          model: this.modelRouter.getChatModel(),
+          model: this.modelRouter.getCoderModel(),
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },

@@ -6,8 +6,10 @@ import type { AgentEvent } from '../agent/AgentLoop';
 import type { OllamaClient } from '../llm/OllamaClient';
 import type { ContextManager } from '../llm/ContextManager';
 import type { ModelRouter } from '../llm/ModelRouter';
+import type { TranslationService } from '../llm/TranslationService';
 import type { ToolRegistry } from '../agent/ToolRegistry';
 import { FILE_EDIT_TOOLS } from '../agent/ToolRegistry';
+import { stripThink } from '../agent/agentUtils';
 import type { OllamaMessage } from '../llm/OllamaClient';
 import type { GitManager } from '../git/GitManager';
 import type { LocalRagEngine } from '../rag/LocalRagEngine';
@@ -74,8 +76,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     private toolRegistry: ToolRegistry,
     private gitManager: GitManager,
     private ragEngine: LocalRagEngine,
+    private translation: TranslationService,
     private context: vscode.ExtensionContext
   ) {}
+
+  /** 翻訳ラウンドトリップ（日本語入力↔英語処理）の有効/無効 */
+  private translateMode = false;
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
@@ -406,12 +412,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         } else {
           this.agentMode = 'auto';
         }
+        this.translateMode = this.context.globalState.get<boolean>('localLlm.translateMode', false);
         await this.refreshModels();
         this.sendSkills();
         this.postTokenUpdate();
         this.view?.webview.postMessage({ type: 'editMode', mode: this.editMode });
         this.view?.webview.postMessage({ type: 'activeFile', path: this.activeFilePath });
         this.view?.webview.postMessage({ type: 'agentMode', mode: this.agentMode });
+        this.view?.webview.postMessage({ type: 'translateMode', enabled: this.translateMode });
         break;
 
       case 'sendMessage':
@@ -499,6 +507,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           ? (newAMode as typeof validAModes[number])
           : 'auto';
         this.view?.webview.postMessage({ type: 'agentMode', mode: this.agentMode });
+        break;
+      }
+
+      case 'setTranslateMode': {
+        const enabled = (msg as unknown as Record<string, unknown>)['enabled'];
+        this.translateMode = enabled === true;
+        void this.context.globalState.update('localLlm.translateMode', this.translateMode);
         break;
       }
 
@@ -617,7 +632,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private async handleCompaction(): Promise<void> {
     try {
-      const compacted = await this.contextManager.compact();
+      // 手動圧縮もSSH経由だと数秒かかる。要約LLM呼び出し中は待機表示を出す
+      // (次に送る text イベントが removeThinking で自動的に消す)。
+      const compacted = await this.contextManager.compact(undefined, (m) =>
+        this.view?.webview.postMessage({ type: 'agentEvent', event: { type: 'thinking', content: m } })
+      );
       this.postTokenUpdate();
       const msg = compacted ? '[Context compacted by summarization]' : '[Nothing to compact yet]';
       this.view?.webview.postMessage({ type: 'agentEvent', event: { type: 'text', content: msg } });
@@ -688,7 +707,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.pendingApproval = null;
     }
 
+    // 履歴プレビューとユーザー吹き出しは原文(日本語)のまま。翻訳ON時はLLMへ渡す
+    // 文面だけ英語化する(メンション/添付/RAGは元から英語前提なので訳さない)。
     this.sessionPreview = userMessage;
+    const promptMessage = this.translateMode
+      ? await this.translation.toEnglish(userMessage)
+      : userMessage;
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
     // Load @mentioned files and prepend their contents
@@ -713,7 +737,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const textAttachments = attachments.filter(a => a.type !== 'image');
     const images = imageAttachments.length > 0 ? imageAttachments.map(a => a.content) : undefined;
 
-    let fullMessage = userMessage;
+    let fullMessage = promptMessage;
     if (textAttachments.length > 0) {
       fullMessage += textAttachments
         .map((a) => `\n\n--- ${a.name} ---\n${a.content}`)
@@ -724,7 +748,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     if (this.config.rag.enabled && this.ragEngine.isIndexed) {
-      const ragContext = this.ragEngine.search(userMessage, 5);
+      const ragContext = this.ragEngine.search(promptMessage, 5);
       if (ragContext) {
         fullMessage = `[Relevant context from codebase]\n${ragContext}\n\n[User query]\n${fullMessage}`;
       }
@@ -741,8 +765,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // Token estimation walks the whole history — throttle it during streaming
     // instead of recomputing on every text delta.
     let lastTokenPost = 0;
+    // 翻訳ON時、最後の生成ターンの本文を保持して完了後に日本語へ訳す。
+    // ('done' はターンごとに飛ぶため、ターン単位でバッファを確定していく)
+    let turnBuffer = '';
+    let lastTurnText = '';
     const onEvent = (event: AgentEvent) => {
       this.view?.webview.postMessage({ type: 'agentEvent', event });
+      if (this.translateMode) {
+        if (event.type === 'text') {
+          turnBuffer += event.content ?? '';
+        } else if (event.type === 'done') {
+          if (turnBuffer.trim()) lastTurnText = turnBuffer;
+          turnBuffer = '';
+        }
+      }
       const now = Date.now();
       if (event.type !== 'text' || now - lastTokenPost > 500) {
         lastTokenPost = now;
@@ -807,6 +843,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.client, this.contextManager, this.modelRouter, this.toolRegistry, workspaceRoot
         );
         await agent.run(fullMessage, onEvent, signal, images);
+      }
+
+      // 翻訳ON: 最終ターンの英語本文(think除去後)を日本語へ訳し、
+      // 既に描画済みの最後のアシスタント吹き出しを置換する。
+      if (this.translateMode && !signal.aborted && runId === this.currentRunId) {
+        if (turnBuffer.trim()) lastTurnText = turnBuffer;
+        const clean = stripThink(lastTurnText).trim();
+        if (clean) {
+          // 出力翻訳はここでstreamが止まり数秒かかるため、その間の無表示を防ぐ。
+          this.view?.webview.postMessage({ type: 'translating' });
+          const ja = await this.translation.toJapanese(clean, signal);
+          // 中断時は ja に英語原文が返る → 置換でインジケータ除去のみ行われる。
+          // 後続runに置き換わった場合は送信側の removeTranslating で掃除される。
+          if (runId === this.currentRunId) {
+            this.view?.webview.postMessage({ type: 'translateReplace', text: ja });
+          }
+        }
       }
     } catch (err) {
       if (!signal.aborted) {

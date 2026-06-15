@@ -5,6 +5,7 @@ import { ConnectionManager } from './llm/ConnectionManager';
 import { OllamaClient } from './llm/OllamaClient';
 import { ContextManager } from './llm/ContextManager';
 import { ModelRouter } from './llm/ModelRouter';
+import { TranslationService } from './llm/TranslationService';
 import { ToolRegistry } from './agent/ToolRegistry';
 import { ReadFileTool } from './agent/tools/ReadFileTool';
 import { WriteFileTool } from './agent/tools/WriteFileTool';
@@ -36,6 +37,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   const contextManager = new ContextManager(config, ollamaClient);
   const modelRouter = new ModelRouter(config);
+  const translationService = new TranslationService(ollamaClient, modelRouter);
   const gitManager = new GitManager();
   const ragEngine = new LocalRagEngine();
 
@@ -77,6 +79,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     toolRegistry,
     gitManager,
     ragEngine,
+    translationService,
     context
   );
 
@@ -111,9 +114,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand('localLlm.selectModel', async (modelType?: string) => {
       const slots = [
-        { label: '$(comment-discussion)  Chat', description: 'Main chat / code generation', key: 'chat' },
+        { label: '$(comment-discussion)  Chat', description: 'Conversation / non-agent chat',  key: 'chat' },
+        { label: '$(code)  Coder',              description: 'Code editing / agent execution (falls back to Chat)', key: 'coder' },
         { label: '$(eye)  Vision',              description: 'Image input (llava etc.)',     key: 'vision' },
-        { label: '$(globe)  Translate',         description: 'Translation tasks',            key: 'translate' },
+        { label: '$(globe)  Translate',         description: 'JA↔EN round-trip translation', key: 'translate' },
         { label: '$(archive)  Compaction',      description: 'History summarization',        key: 'compaction' },
       ];
 

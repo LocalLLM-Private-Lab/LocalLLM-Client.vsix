@@ -42,7 +42,7 @@ export class ReActAgent {
   ): Promise<void> {
     this.contextManager.setSystemPrompt(this.systemPrompt);
     this.contextManager.addMessage({ role: 'user', content: userMessage, images });
-    await this.contextManager.compactIfNeeded(signal);
+    await this.contextManager.compactIfNeeded(signal, (m) => onEvent({ type: 'thinking', content: m }));
 
     const degDetector = new DegenerationDetector();
     const selfCorrDetector = new SelfCorrectionDetector();
@@ -76,10 +76,12 @@ export class ReActAgent {
 
       const messages = this.contextManager.getMessages();
       const hasImages = messages.some(m => m.images && m.images.length > 0);
+      // 生成ごとに待機表示(縮退リトライ等、tool_result を介さない再生成をカバー)
+      onEvent({ type: 'thinking', content: 'Waiting for LLM response…' });
       try {
         await this.client.chatStream(
           {
-            model: this.modelRouter.getModelForImages(hasImages),
+            model: this.modelRouter.getModelForImages(hasImages, 'coder'),
             messages,
             options: { num_predict: 2048, temperature: 0.35, top_p: 0.9, mirostat: 2, mirostat_tau: 5.0 },
           },

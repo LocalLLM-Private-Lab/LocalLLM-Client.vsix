@@ -44,6 +44,10 @@ export class ChatOnlyAgent {
       }
     };
 
+    // auto モードでは直前の「[Auto → Chat]」テキストが送信スピナーを消すため、
+    // 最初のトークンまでの待機を埋める。
+    onEvent({ type: 'thinking', content: 'Waiting for LLM response…' });
+
     await this.client.chatStream(
       {
         model: this.modelRouter.getModelForImages(hasImages),

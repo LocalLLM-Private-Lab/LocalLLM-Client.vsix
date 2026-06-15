@@ -131,7 +131,12 @@
         "localLlm.models.chat": {
           "type": "string",
           "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for chat and code generation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
+          "markdownDescription": "Model for conversation / non-agent chat. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
+        },
+        "localLlm.models.coder": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model for code editing and agent execution (AgentLoop / ReAct / RepoMap / Debug). Leave empty to reuse the Chat model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22coder%22)"
         },
         "localLlm.models.vision": {
           "type": "string",
@@ -141,7 +146,7 @@
         "localLlm.models.translate": {
           "type": "string",
           "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for translation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22translate%22)"
+          "markdownDescription": "Model for JA↔EN round-trip translation (translate toggle). [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22translate%22)"
         },
         "localLlm.models.compaction": {
           "type": "string",
