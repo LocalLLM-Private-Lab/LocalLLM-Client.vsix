@@ -10,7 +10,7 @@ import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage,
 export interface AgentEvent {
   type: 'thinking' | 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' |
         'needs_input' | 'input_done' | 'needs_permission' | 'needs_approval' |
-        'phase_banner';
+        'phase_banner' | 'model';
   content?: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -74,7 +74,7 @@ export class AgentLoop {
    *  loopGuard を渡すと指紋/編集履歴が呼び出しを跨いで共有される（プランの全ステップ・
    *  全再プランサイクルで1つを共有し、ステップ境界を跨ぐ編集の往復を検出する）。 */
   async runFromContext(onEvent: AgentEventHandler, signal: AbortSignal, loopGuard?: LoopGuardState): Promise<void> {
-    await this.contextManager.compactIfNeeded(signal);
+    await this.contextManager.compactIfNeeded(signal, (m) => onEvent({ type: 'thinking', content: m }));
 
     // Fingerprint-based loop detection: track (tool + args hash) of recent calls.
     const guard = loopGuard ?? new LoopGuardState();
@@ -155,14 +155,16 @@ export class AgentLoop {
 
       let streamError: unknown = null;
       try {
+        const model = this.modelRouter.getModelForImages(hasImages, 'coder');
+        onEvent({ type: 'model', content: model });
         await this.client.chatStream(
           {
-            model: this.modelRouter.getModelForImages(hasImages),
+            model,
             messages,
             tools: this.toolRegistry.toOllamaTools(),
             ...(this.thinkOverride !== undefined
               ? { think: this.thinkOverride }
-              : (this.modelRouter.needsThinkParam() && { think: true })),
+              : (this.modelRouter.needsThinkParam(model) && { think: true })),
             options: { ...CODING_SAMPLE_OPTIONS, temperature },
           },
           onDelta,

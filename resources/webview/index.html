@@ -582,6 +582,35 @@
     /* TeX表示トグル: ON時は強調、OFF(プレーン表示)時は打ち消し見た目 */
     #btn-tex.tex-on { opacity: 0.95; color: var(--button-bg); }
     #btn-tex.tex-off { opacity: 0.35; text-decoration: line-through; }
+    /* 翻訳ON時に実際にLLMへ送った英文 / 英訳失敗の警告を示す小さな注記 */
+    .xlate-note {
+      font-size: 11px;
+      opacity: 0.6;
+      font-style: italic;
+      margin: 2px 0 6px;
+      padding-left: 4px;
+      border-left: 2px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .xlate-note-warn { opacity: 0.85; color: var(--vscode-editorWarning-foreground, #cca700); border-left-color: currentColor; }
+    /* どのモデルが回答したかを示すバッジ(吹き出し先頭) */
+    .model-badge {
+      display: inline-block;
+      font-size: 10px;
+      opacity: 0.5;
+      margin-bottom: 4px;
+      padding: 1px 6px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      white-space: nowrap;
+    }
+    /* 翻訳トグル: A と あ を組み合わせたアイコン。ON時は強調、OFF時は減光 */
+    .xlate-icon { position: relative; font-weight: 600; letter-spacing: -0.02em; }
+    .xlate-icon .xlate-jp { font-size: 0.78em; margin-left: 0.04em; }
+    #btn-translate.translate-on { opacity: 0.95; color: var(--button-bg); }
+    #btn-translate.translate-off { opacity: 0.4; }
     .mode-btn {
       font-size: 10px;
       padding: 2px 6px;
@@ -1179,14 +1208,14 @@
 </head>
 <body>
   <div id="boot-overlay"><div class="boot-spinner"></div>Loading…</div>
-  <div id="top-bar">
-    <select id="model-select" title="Select model">
-      <option value="" disabled selected>Loading models…</option>
-    </select>
-    <button id="btn-new" title="New session">＋</button>
-    <button id="btn-history" title="Session history">⏱</button>
-    <button id="btn-settings" title="Open settings">⚙</button>
-  </div>
+    <div id="top-bar">
+      <select id="model-select" title="基準(general)モデル — 空のスロットはこれに追従">
+        <option value="" disabled selected>Loading models…</option>
+      </select>
+      <button id="btn-new" title="New session">＋</button>
+      <button id="btn-history" title="Session history">⏱</button>
+      <button id="btn-settings" title="Open settings">⚙</button>
+    </div>
 
   <div id="messages-wrap">
     <div id="messages"></div>
@@ -1331,6 +1360,7 @@
           <span id="agent-indicator" class="hidden"></span>
         </div>
         <div id="toolbar-right">
+          <button id="btn-translate" class="toolbar-btn" title="翻訳: OFF (クリックで 日本語入力⇔英語処理 を有効化)"><span class="xlate-icon">A<span class="xlate-jp">あ</span></span></button>
           <button id="btn-tex" class="toolbar-btn" title="数式表示: TeXレンダリング中 (クリックでプレーン表示)">∑</button>
           <button id="btn-agent-mode" class="toolbar-btn agent-mode-btn" title="Agent mode — click to change">Agent: Loop</button>
           <button id="btn-mode" class="toolbar-btn mode-btn" data-mode="ask" title="Ask mode: permission required before edits. Click to change mode.">🔒 Ask</button>

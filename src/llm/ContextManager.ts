@@ -67,14 +67,14 @@ export class ContextManager {
    * 推定トークン数がコンテキストウィンドウの閾値を超えていたら
    * 古い会話を compaction モデルで要約して履歴を圧縮する。
    */
-  async compactIfNeeded(signal?: AbortSignal): Promise<boolean> {
+  async compactIfNeeded(signal?: AbortSignal, onProgress?: (msg: string) => void): Promise<boolean> {
     const estimated = this.estimateTokens();
     const threshold = this.config.tokens.contextWindow * COMPACTION_THRESHOLD;
     if (estimated < threshold) return false;
-    return this.compact(signal);
+    return this.compact(signal, onProgress);
   }
 
-  async compact(signal?: AbortSignal): Promise<boolean> {
+  async compact(signal?: AbortSignal, onProgress?: (msg: string) => void): Promise<boolean> {
     const keepCount = 6;
     let splitIdx = Math.max(0, this.messages.length - keepCount);
     // Never let the kept slice start with a tool response — that would orphan it
@@ -88,6 +88,9 @@ export class ContextManager {
     if (toSummarize.length === 0) return false;
 
     this.harvestSessionState(toSummarize);
+    // 要約LLM呼び出しはSSH経由だと数秒〜数十秒かかり、その間UIが無反応に見える。
+    // 呼び出し側(agent/手動)に進捗を通知してスピナーを出させる。
+    onProgress?.('会話履歴を圧縮中…');
     const summaryText = await this.summarize(toSummarize, signal);
     this.messages = [
       {

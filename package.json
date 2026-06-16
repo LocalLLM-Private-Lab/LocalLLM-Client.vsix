@@ -128,25 +128,35 @@
           "default": 11435,
           "description": "Local port to forward to remote Ollama"
         },
-        "localLlm.models.chat": {
+        "localLlm.models.general": {
           "type": "string",
           "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for chat and code generation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
+          "markdownDescription": "General base model. Every other slot falls back to this when left empty. The model dropdown in the chat header switches this. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22general%22)"
+        },
+        "localLlm.models.chat": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model for conversation / non-agent chat. Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
+        },
+        "localLlm.models.coder": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model for code editing and agent execution (AgentLoop / ReAct / RepoMap / Debug). Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22coder%22)"
         },
         "localLlm.models.vision": {
           "type": "string",
-          "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for image/vision input. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22vision%22)"
+          "default": "",
+          "markdownDescription": "Model for image/vision input. Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22vision%22)"
         },
         "localLlm.models.translate": {
           "type": "string",
-          "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for translation. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22translate%22)"
+          "default": "",
+          "markdownDescription": "Model for JA↔EN round-trip translation (translate toggle). Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22translate%22)"
         },
         "localLlm.models.compaction": {
           "type": "string",
-          "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "Model for context compaction/summarization. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22compaction%22)"
+          "default": "",
+          "markdownDescription": "Model for context compaction/summarization. Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22compaction%22)"
         },
         "localLlm.tokens.maxTokens": {
           "type": "number",

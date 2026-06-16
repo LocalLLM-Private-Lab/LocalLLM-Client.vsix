@@ -13,7 +13,10 @@ export interface SshConnectionConfig {
 }
 
 export interface ModelConfig {
+  /** 基準モデル。各スロットが空のときのフォールバック先。ヘッダーのモデル選択はこれを切り替える。 */
+  general: string;
   chat: string;
+  coder: string;
   vision: string;
   translate: string;
   compaction: string;
@@ -53,4 +56,4 @@ export interface OllamaConfig {
   outputLanguage: string;
 }
 
-export type TaskType = 'chat' | 'vision' | 'translate' | 'compaction';
+export type TaskType = 'chat' | 'coder' | 'vision' | 'translate' | 'compaction';
