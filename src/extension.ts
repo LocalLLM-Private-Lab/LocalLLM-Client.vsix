@@ -113,9 +113,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
 
     vscode.commands.registerCommand('localLlm.selectModel', async (modelType?: string) => {
+      // general(基準)と chat はヘッダーのドロップダウンで選ぶ(chatはgeneral追従)。
+      // ここでは general を上書きする補助スロットのみを扱う。空=general追従。
       const slots = [
-        { label: '$(star)  General',            description: 'Base model — every empty slot falls back to this', key: 'general' },
-        { label: '$(comment-discussion)  Chat', description: 'Conversation / non-agent chat',  key: 'chat' },
         { label: '$(code)  Coder',              description: 'Code editing / agent execution', key: 'coder' },
         { label: '$(eye)  Vision',              description: 'Image input (llava etc.)',     key: 'vision' },
         { label: '$(globe)  Translate',         description: 'JA↔EN round-trip translation', key: 'translate' },
@@ -248,9 +248,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         num_ctx: newConfig.tokens.contextWindow,
         num_predict: newConfig.tokens.maxTokens,
       });
+      // chatProvider.applyConfig が modelRouter/contextManager.applyConfig を呼び、
+      // さらに globalState の general を再適用する。ここで modelRouter.applyConfig を
+      // 重ねて呼ぶと general(ヘッダー選択)が既定へ巻き戻るため呼ばない。
       chatProvider.applyConfig(newConfig);
-      modelRouter.applyConfig(newConfig);
-      contextManager.applyConfig(newConfig);
 
       if (newConfig.rag.enabled && newConfig.rag.indexPaths.length > 0) {
         ragEngine.index(newConfig.rag.indexPaths).catch(() => {});

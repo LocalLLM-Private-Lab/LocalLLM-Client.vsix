@@ -264,8 +264,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.config = config;
     this.contextManager.applyConfig(config);
     this.modelRouter.applyConfig(config);
+    this.applyPersistedGeneralModel();
     this.applySystemPrompt();
     this.sendSkills();
+  }
+
+  /** ヘッダーで選んだ general モデル(globalState)を modelRouter に適用する。
+   *  applyConfig は config を settings から組み直すため、その後に再適用しないと
+   *  ヘッダー選択が既定値へ巻き戻る。 */
+  private applyPersistedGeneralModel(): void {
+    const g = this.context.globalState.get<string>('localLlm.generalModel');
+    if (g) this.modelRouter.setGeneralModel(g);
   }
 
   /** Aborts the running agent (if any) and resolves all pending dialogs. */
@@ -420,6 +429,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.agentMode = 'auto';
         }
         this.translateMode = this.context.globalState.get<boolean>('localLlm.translateMode', false);
+        this.applyPersistedGeneralModel();
         await this.refreshModels();
         this.sendSkills();
         this.postTokenUpdate();
@@ -452,8 +462,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case 'setModel': {
         const model = msg.model as string | undefined;
         if (model) {
-          await this.context.workspaceState.update('localLlm.lastModel', model);
+          // general はヘッダー専用。設定(settings.json)ではなく globalState に永続化する。
+          // 即時反映 + 保存。config hot-reload では applyConfig が globalState から再適用する。
           this.modelRouter.setGeneralModel(model);
+          await this.context.globalState.update('localLlm.generalModel', model);
         }
         break;
       }
@@ -900,12 +912,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const { models } = await this.client.listModels();
       const names = models.map((m) => m.name);
       this.view?.webview.postMessage({ type: 'updateModels', models: names });
-      const lastModel = this.context.workspaceState.get<string>('localLlm.lastModel');
-      const activeModel = lastModel && names.includes(lastModel) ? lastModel : this.modelRouter.getGeneralModel();
-      if (lastModel && names.includes(lastModel)) {
-        this.modelRouter.setGeneralModel(lastModel);
-      }
-      this.view?.webview.postMessage({ type: 'setDefaultModel', model: activeModel });
+      // 基準モデル(=ヘッダー選択。globalState 'localLlm.generalModel' が真実)を反映。
+      this.view?.webview.postMessage({ type: 'setDefaultModel', model: this.modelRouter.getGeneralModel() });
     } catch { /* Ollama not running */ }
   }
 

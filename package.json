@@ -128,16 +128,6 @@
           "default": 11435,
           "description": "Local port to forward to remote Ollama"
         },
-        "localLlm.models.general": {
-          "type": "string",
-          "default": "gemma4:26b-a4b-it-q4_K_M",
-          "markdownDescription": "General base model. Every other slot falls back to this when left empty. The model dropdown in the chat header switches this. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22general%22)"
-        },
-        "localLlm.models.chat": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Model for conversation / non-agent chat. Empty = use the General model. [$(list-selection) Pick from Ollama](command:localLlm.selectModel?%22chat%22)"
-        },
         "localLlm.models.coder": {
           "type": "string",
           "default": "",
