@@ -215,6 +215,7 @@ export class DebugPhaseAgent {
       let streamError: unknown = null;
       try {
         const model = this.modelRouter.getModelForImages(hasImages, 'coder');
+        onEvent({ type: 'model', content: model });
         await this.client.chatStream(
           {
             model,

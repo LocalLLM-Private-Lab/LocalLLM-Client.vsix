@@ -140,6 +140,18 @@ const btnTranslate = document.getElementById('btn-translate') as HTMLButtonEleme
 let sendActiveFile = true;
 // 翻訳ON時、完了後に日本語へ置換する対象として最後のアシスタント吹き出しを保持する
 let lastAssistantBubble: HTMLElement | null = null;
+// 各生成の直前に届くモデル名。次に作るアシスタント吹き出しへバッジとして付与する。
+let pendingModelName: string | null = null;
+let modelBadgePending = false;
+
+/** どのモデルが回答しているかを示す小さなバッジを吹き出し先頭に付ける。 */
+function addModelBadge(bubble: HTMLElement, name: string): void {
+  if (bubble.querySelector('.model-badge')) return;
+  const badge = document.createElement('div');
+  badge.className = 'model-badge';
+  badge.textContent = name;
+  bubble.insertBefore(badge, bubble.firstChild);
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let attachedFiles: Array<{ name: string; content: string; type?: string; previewUrl?: string }> = [];
@@ -457,6 +469,10 @@ function processChunk(chunk: string) {
 function appendText(text: string) {
   if (!currentAssistantBubble) startAssistantMessage();
   clearLoadingIndicator();
+  if (modelBadgePending && pendingModelName && currentAssistantBubble) {
+    addModelBadge(currentAssistantBubble, pendingModelName);
+    modelBadgePending = false;
+  }
   processChunk(text);
   scrollToBottom();
 }
@@ -531,6 +547,15 @@ function showTranslating() {
   scrollToBottom();
 }
 function removeTranslating() { document.getElementById('translating-indicator')?.remove(); }
+
+/** 翻訳ON時、実際にLLMへ送った英文(または英訳失敗の警告)を会話に小さく表示する。 */
+function appendXlateNote(text: string, warn = false): void {
+  const div = document.createElement('div');
+  div.className = warn ? 'xlate-note xlate-note-warn' : 'xlate-note';
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  scrollToBottom();
+}
 
 /** Shows the spinner while waiting for the next LLM generation to start
  *  (after sending a message, a tool result, or an approval). Removed
@@ -706,6 +731,9 @@ function clearChatUI() {
   messagesEl.innerHTML = '';
   mdSources.clear();
   currentAssistantBubble = null;
+  lastAssistantBubble = null;
+  pendingModelName = null;
+  modelBadgePending = false;
   thinkState = 'normal';
   thinkTagBuffer = '';
 
@@ -1256,11 +1284,14 @@ applyTranslateUI(translateMode);
 function replaceLastAssistantWithTranslation(text: string): void {
   const bubble = lastAssistantBubble;
   if (!bubble || !bubble.isConnected) return;
+  // モデルバッジは翻訳後も残す(どのモデルが回答したかは置換後も知りたい)。
+  const modelName = bubble.querySelector('.model-badge')?.textContent ?? null;
   // 既存の本文・思考ブロックを除去し、日本語の本文だけを描画し直す。
   for (const child of Array.from(bubble.childNodes)) {
     if (child instanceof HTMLElement) mdSources.delete(child);
     bubble.removeChild(child);
   }
+  if (modelName) addModelBadge(bubble, modelName);
   renderAssistantMarkdown(bubble, text);
 }
 
@@ -1340,6 +1371,11 @@ window.addEventListener('message', (event: MessageEvent) => {
         case 'text':
           removeThinking();
           appendText(ev['content'] as string);
+          break;
+        case 'model':
+          // 次の生成のモデル名。最初の text 吹き出しにバッジとして付ける。
+          pendingModelName = ev['content'] as string;
+          modelBadgePending = true;
           break;
         case 'thinking':
           removeThinking();
@@ -1512,6 +1548,13 @@ window.addEventListener('message', (event: MessageEvent) => {
       translateMode = msg['enabled'] === true;
       applyTranslateUI(translateMode);
       break;
+
+    case 'translatedInput': {
+      const w = msg['warn'] as string | undefined;
+      if (w) appendXlateNote('⚠ ' + w, true);
+      else appendXlateNote('🌐 → EN: ' + (msg['text'] as string));
+      break;
+    }
 
     case 'translating':
       showTranslating();

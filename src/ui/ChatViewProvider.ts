@@ -446,7 +446,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const model = msg.model as string | undefined;
         if (model) {
           await this.context.workspaceState.update('localLlm.lastModel', model);
-          this.modelRouter.setChatModel(model);
+          this.modelRouter.setGeneralModel(model);
         }
         break;
       }
@@ -713,6 +713,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const promptMessage = this.translateMode
       ? await this.translation.toEnglish(userMessage)
       : userMessage;
+    if (this.translateMode) {
+      if (promptMessage.trim() && promptMessage !== userMessage) {
+        // 実際にLLMへ送る英文を提示(入力が英訳されたことを可視化)
+        this.view?.webview.postMessage({ type: 'translatedInput', text: promptMessage });
+      } else if (/[　-ヿ㐀-鿿＀-￯]/.test(userMessage)) {
+        // 日本語のままなのに変化なし = 英訳が失敗/無効。原文のまま送られる旨を警告。
+        this.view?.webview.postMessage({
+          type: 'translatedInput',
+          text: '',
+          warn: '英訳できませんでした（原文のまま送信します）',
+        });
+      }
+    }
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
     // Load @mentioned files and prepend their contents
@@ -881,9 +894,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const names = models.map((m) => m.name);
       this.view?.webview.postMessage({ type: 'updateModels', models: names });
       const lastModel = this.context.workspaceState.get<string>('localLlm.lastModel');
-      const activeModel = lastModel && names.includes(lastModel) ? lastModel : this.config.models.chat;
+      const activeModel = lastModel && names.includes(lastModel) ? lastModel : this.modelRouter.getGeneralModel();
       if (lastModel && names.includes(lastModel)) {
-        this.modelRouter.setChatModel(lastModel);
+        this.modelRouter.setGeneralModel(lastModel);
       }
       this.view?.webview.postMessage({ type: 'setDefaultModel', model: activeModel });
     } catch { /* Ollama not running */ }

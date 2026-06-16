@@ -196,10 +196,12 @@ export class BehaviorVerifier {
         onEvent({ type: 'text', content: d.content });
       }
     };
+    const model = this.modelRouter.getCoderModel();
+    onEvent({ type: 'model', content: model });
     try {
       await this.client.chatStream(
         {
-          model: this.modelRouter.getCoderModel(),
+          model,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },

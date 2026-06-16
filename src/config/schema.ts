@@ -13,6 +13,8 @@ export interface SshConnectionConfig {
 }
 
 export interface ModelConfig {
+  /** 基準モデル。各スロットが空のときのフォールバック先。ヘッダーのモデル選択はこれを切り替える。 */
+  general: string;
   chat: string;
   coder: string;
   vision: string;

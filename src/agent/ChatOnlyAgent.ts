@@ -47,12 +47,14 @@ export class ChatOnlyAgent {
     // auto モードでは直前の「[Auto → Chat]」テキストが送信スピナーを消すため、
     // 最初のトークンまでの待機を埋める。
     onEvent({ type: 'thinking', content: 'Waiting for LLM response…' });
+    const model = this.modelRouter.getModelForImages(hasImages);
+    onEvent({ type: 'model', content: model });
 
     await this.client.chatStream(
       {
-        model: this.modelRouter.getModelForImages(hasImages),
+        model,
         messages,
-        ...(this.modelRouter.needsThinkParam() && { think: true }),
+        ...(this.modelRouter.needsThinkParam(model) && { think: true }),
         // num_predict / num_ctx はユーザー設定から OllamaClient が注入する
       },
       onDelta,

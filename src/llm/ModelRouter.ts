@@ -1,4 +1,4 @@
-import type { OllamaConfig, TaskType } from '../config/schema';
+import type { ModelConfig, OllamaConfig, TaskType } from '../config/schema';
 
 /**
  * Models that require an explicit top-level `think: true` in the Ollama request
@@ -20,17 +20,27 @@ export class ModelRouter {
     this.config = config;
   }
 
+  /** スロットが空なら general（基準モデル）にフォールバックして解決する。 */
+  private resolve(slot: keyof ModelConfig): string {
+    return this.config.models[slot] || this.config.models.general;
+  }
+
+  /** 基準モデル。ヘッダーのモデル選択が切り替える対象。 */
+  getGeneralModel(): string {
+    return this.config.models.general;
+  }
+
   getModel(task: TaskType): string {
-    return this.config.models[task];
+    return this.resolve(task);
   }
 
   getChatModel(): string {
-    return this.config.models.chat;
+    return this.resolve('chat');
   }
 
-  /** コード編集・エージェント実行用モデル。未設定なら chat にフォールバック。 */
+  /** コード編集・エージェント実行用モデル。未設定なら general にフォールバック。 */
   getCoderModel(): string {
-    return this.config.models.coder || this.config.models.chat;
+    return this.resolve('coder');
   }
 
   /** Configured per-generation token budget (tokens.maxTokens) */
@@ -38,33 +48,30 @@ export class ModelRouter {
     return this.config.tokens.maxTokens;
   }
 
-  setChatModel(model: string): void {
-    this.config.models.chat = model;
+  /** ヘッダーのドロップダウン用。基準モデルをインメモリで切り替える。 */
+  setGeneralModel(model: string): void {
+    this.config.models.general = model;
   }
 
   /**
    * Returns the model for the given role, with vision taking priority when
-   * images are present. role='coder' resolves to the coder model (falling back
-   * to chat when unset); role='chat' (default) resolves to the chat model.
+   * images are present. Each slot falls back to the general model when unset.
    */
   getModelForImages(hasImages: boolean, role: 'chat' | 'coder' = 'chat'): string {
-    if (hasImages && this.config.models.vision) {
-      return this.config.models.vision;
+    if (hasImages) {
+      return this.resolve('vision');
     }
-    if (role === 'coder' && this.config.models.coder) {
-      return this.config.models.coder;
-    }
-    return this.config.models.chat;
+    return this.resolve(role);
   }
 
   /**
-   * Returns true when the given model (defaults to the chat model) needs
+   * Returns true when the given model (defaults to the general model) needs
    * `think: true` sent as a top-level Ollama request parameter to enable
-   * reasoning tokens. Pass the actually-resolved model so coder generations
-   * are evaluated against the coder model rather than chat.
+   * reasoning tokens. Pass the actually-resolved model so each generation is
+   * evaluated against the model it will actually use.
    */
   needsThinkParam(model?: string): boolean {
-    const name = model ?? this.getChatModel();
+    const name = model ?? this.getGeneralModel();
     return THINK_PARAM_PATTERNS.some(re => re.test(name));
   }
 }

@@ -54,7 +54,10 @@ export class TranslationService {
       );
       const out = stripThink(res.message?.content ?? '').trim();
       return out || text;
-    } catch {
+    } catch (err) {
+      // 失敗時は原文を返して処理を止めないが、無言だと「翻訳されていない」と
+      // 区別がつかないため診断ログだけ残す。
+      console.warn(`[TranslationService] ${targetName} translation failed:`, err);
       return text;
     }
   }

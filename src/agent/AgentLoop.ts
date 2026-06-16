@@ -10,7 +10,7 @@ import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage,
 export interface AgentEvent {
   type: 'thinking' | 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' |
         'needs_input' | 'input_done' | 'needs_permission' | 'needs_approval' |
-        'phase_banner';
+        'phase_banner' | 'model';
   content?: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -155,6 +155,7 @@ export class AgentLoop {
       let streamError: unknown = null;
       try {
         const model = this.modelRouter.getModelForImages(hasImages, 'coder');
+        onEvent({ type: 'model', content: model });
         await this.client.chatStream(
           {
             model,

@@ -114,8 +114,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand('localLlm.selectModel', async (modelType?: string) => {
       const slots = [
+        { label: '$(star)  General',            description: 'Base model — every empty slot falls back to this', key: 'general' },
         { label: '$(comment-discussion)  Chat', description: 'Conversation / non-agent chat',  key: 'chat' },
-        { label: '$(code)  Coder',              description: 'Code editing / agent execution (falls back to Chat)', key: 'coder' },
+        { label: '$(code)  Coder',              description: 'Code editing / agent execution', key: 'coder' },
         { label: '$(eye)  Vision',              description: 'Image input (llava etc.)',     key: 'vision' },
         { label: '$(globe)  Translate',         description: 'JA↔EN round-trip translation', key: 'translate' },
         { label: '$(archive)  Compaction',      description: 'History summarization',        key: 'compaction' },
@@ -151,23 +152,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .getConfiguration('localLlm')
         .get<string>(`models.${selectedSlot.key}`, '');
 
-      const modelItems = modelNames.map(name => ({
+      const FOLLOW_GENERAL = '$(sync)  Follow General model';
+      const modelItems: vscode.QuickPickItem[] = [];
+      // general 以外のスロットは「general に追従(空にする)」を先頭に提示。
+      if (selectedSlot.key !== 'general') {
+        modelItems.push({
+          label: FOLLOW_GENERAL,
+          description: current === '' ? '✓ current' : undefined,
+        });
+      }
+      modelItems.push(...modelNames.map(name => ({
         label: name,
         description: name === current ? '✓ current' : undefined,
-      }));
+      })));
 
       const chosenModel = await vscode.window.showQuickPick(modelItems, {
-        placeHolder: `Select model for [${selectedSlot.key}]  (current: ${current || 'none'})`,
+        placeHolder: `Select model for [${selectedSlot.key}]  (current: ${current || 'follow general'})`,
         matchOnDescription: false,
       });
       if (!chosenModel) return;
 
+      const chosenValue = chosenModel.label === FOLLOW_GENERAL ? '' : chosenModel.label;
       await vscode.workspace
         .getConfiguration('localLlm')
-        .update(`models.${selectedSlot.key}`, chosenModel.label, vscode.ConfigurationTarget.Global);
+        .update(`models.${selectedSlot.key}`, chosenValue, vscode.ConfigurationTarget.Global);
 
       vscode.window.showInformationMessage(
-        `[${selectedSlot.key}] model → ${chosenModel.label}`
+        `[${selectedSlot.key}] model → ${chosenValue || 'follow general'}`
       );
 
       // チャットパネルのドロップダウンも更新
