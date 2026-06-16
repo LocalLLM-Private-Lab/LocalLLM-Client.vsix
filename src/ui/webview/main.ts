@@ -1,10 +1,18 @@
 // Webview frontend — runs in a sandboxed browser context (no Node/VSCode APIs)
 
 import { marked } from 'marked';
-import hljs from 'highlight.js';
+// 全192言語入り'highlight.js'はバンドルの大半を占めるため、主要言語のみの
+// commonビルドを使う。未対応言語は既存のgetLanguageチェックでplaintextに落ちる。
+import hljs from 'highlight.js/lib/common';
 import DOMPurify from 'dompurify';
-import katex from 'katex';
-import 'katex/dist/katex.min.css';
+import type katexDefault from 'katex';
+import type { DiffLine } from '../diffUtils';
+
+// 遅延チャンク(KaTeX)が注入する<script>/<style>タグにCSPのnonceを引き継ぐ。
+// これが無いとscript-srcがnonce必須のためチャンクのロードがブロックされる。
+declare let __webpack_nonce__: string;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars, prefer-const -- webpackが読むフリー変数
+__webpack_nonce__ = (document.currentScript as HTMLScriptElement | null)?.nonce ?? '';
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
@@ -51,6 +59,33 @@ let texRender =
 /** 確定済みmd-containerの元テキスト — トグル時にここから再レンダリングする */
 const mdSources = new Map<HTMLElement, string>();
 
+// KaTeX本体+CSS(フォント込みで初期バンドルの約4割)は遅延チャンクに分離。
+// 数式らしいテキストを初めて見たときにロードし、それまではプレーン表示で
+// しのぐ。ロード完了後に確定済みコンテナを再レンダリングして数式化する。
+let katex: typeof katexDefault | null = null;
+let katexLoading = false;
+
+function ensureKatexLoaded(): void {
+  if (katex || katexLoading) return;
+  katexLoading = true;
+  Promise.all([
+    import(/* webpackChunkName: "katex" */ 'katex'),
+    import(/* webpackChunkName: "katex" */ 'katex/dist/katex.min.css'),
+  ])
+    .then(([mod]) => {
+      katex = mod.default;
+      for (const [el, src] of mdSources) {
+        if (el.isConnected) renderMdContainer(el, src);
+      }
+    })
+    .catch(() => {
+      katexLoading = false; // 失敗時は次の数式出現で再試行
+    });
+}
+
+/** maskMathを走らせる価値があるか(数式デリミタ候補を含むか)の軽い事前判定 */
+const MAYBE_MATH_RE = /\$|\\\(|\\\[/;
+
 // markdownに干渉しない私用領域(PUA)文字をプレースホルダの印に使う
 const MATH_PH = String.fromCharCode(0xe000);
 // 単独$は通貨等の誤検知があるため「前後が空白でない+数式らしい中身」だけ拾う。
@@ -85,6 +120,8 @@ function maskMath(text: string, out: Array<{ src: string; display: boolean }>): 
 /** markdown + KaTeX。KaTeX出力はサニタイズ後に挿入するが、入力はテキスト由来で
  *  throwOnError:false かつ trust:false(\href等の危険コマンド無効)なので安全。 */
 function renderMarkdownWithMath(text: string): string {
+  const k = katex;
+  if (!k) return renderMarkdown(text); // チャンク未ロード — ロード完了時に再レンダリングされる
   const mathParts: Array<{ src: string; display: boolean }> = [];
   const masked = maskMath(text, mathParts);
   const html = DOMPurify.sanitize(marked.parse(masked) as string);
@@ -92,7 +129,7 @@ function renderMarkdownWithMath(text: string): string {
     const m = mathParts[Number(i)];
     if (!m) return whole;
     try {
-      return katex.renderToString(m.src, { displayMode: m.display, throwOnError: false });
+      return k.renderToString(m.src, { displayMode: m.display, throwOnError: false });
     } catch {
       return escapeHtml(m.src);
     }
@@ -101,6 +138,7 @@ function renderMarkdownWithMath(text: string): string {
 
 /** 確定したmd-containerを現在の表示モードで(再)レンダリングする */
 function renderMdContainer(container: HTMLElement, text: string): void {
+  if (texRender && !katex && MAYBE_MATH_RE.test(text)) ensureKatexLoaded();
   container.innerHTML = texRender ? renderMarkdownWithMath(text) : renderMarkdown(text);
   addCopyButtons(container);
 }
@@ -568,13 +606,71 @@ function showWaiting(label = 'Waiting for LLM response…') {
 
 // ── Diff helpers (for permission dialog) ─────────────────────────────────────
 
-function buildDiffHtml(diff: string): string {
-  return diff.split('\n').map(line => {
-    const escaped = escapeHtml(line);
-    if (line.startsWith('-')) return `<span class="diff-del">${escaped}</span>`;
-    if (line.startsWith('+')) return `<span class="diff-add">${escaped}</span>`;
-    return `<span class="diff-ctx">${escaped}</span>`;
-  }).join('');
+function buildDiffHtml(lines: DiffLine[]): string {
+  // 行番号ガターの幅は最大行番号の桁数に合わせる
+  const maxNo = lines.reduce((mx, l) => Math.max(mx, l.oldNo ?? 0, l.newNo ?? 0), 1);
+  const gutCh = String(maxNo).length + 1;
+  return lines
+    .map((l) => {
+      if (l.kind === 'gap') {
+        return `<div class="diff-row diff-gap">${escapeHtml(l.text)}</div>`;
+      }
+      const sign = l.kind === 'add' ? '+' : l.kind === 'del' ? '-' : ' ';
+      return (
+        `<div class="diff-row diff-${l.kind}">` +
+        `<span class="diff-gut" style="width:${gutCh}ch">${l.oldNo ?? ''}</span>` +
+        `<span class="diff-gut" style="width:${gutCh}ch">${l.newNo ?? ''}</span>` +
+        `<span class="diff-sign">${sign}</span>` +
+        `<span class="diff-line-text">${escapeHtml(l.text)}</span>` +
+        `</div>`
+      );
+    })
+    .join('');
+}
+
+/** diff全体を全画面モーダルで拡大表示する(✕・Esc・背景クリックで閉じる) */
+function openDiffModal(title: string, lines: DiffLine[]): void {
+  document.getElementById('diff-modal')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'diff-modal';
+
+  const panel = document.createElement('div');
+  panel.className = 'diff-modal-panel';
+
+  const head = document.createElement('div');
+  head.className = 'diff-modal-head';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'diff-modal-title';
+  titleEl.textContent = title;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'diff-modal-close';
+  closeBtn.title = 'Close (Esc)';
+  closeBtn.textContent = '✕';
+  head.appendChild(titleEl);
+  head.appendChild(closeBtn);
+
+  const body = document.createElement('pre');
+  body.className = 'diff-modal-body';
+  body.innerHTML = buildDiffHtml(lines);
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close();
+  };
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener('keydown', onKey);
+
+  panel.appendChild(head);
+  panel.appendChild(body);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
 }
 
 // ── Plan approval request ─────────────────────────────────────────────────────
@@ -637,7 +733,7 @@ function showApprovalRequest(planText: string, cycle?: number) {
 
 // ── Permission request ────────────────────────────────────────────────────────
 
-function showPermissionRequest(toolName: string, description: string, diff?: string) {
+function showPermissionRequest(toolName: string, description: string, diffLines?: DiffLine[]) {
   document.getElementById('active-permission-request')?.remove();
 
   const block = document.createElement('div');
@@ -650,9 +746,8 @@ function showPermissionRequest(toolName: string, description: string, diff?: str
     `<div class="perm-req-title">🔑 Permission Request</div>` +
     `<div class="perm-req-desc">${escapeHtml(description)}</div>`;
 
-  if (diff) {
+  if (diffLines && diffLines.length > 0) {
     const PREVIEW_LINES = 8;
-    const allLines = diff.split('\n');
 
     const diffWrap = document.createElement('div');
     diffWrap.className = 'perm-diff-wrap';
@@ -661,23 +756,28 @@ function showPermissionRequest(toolName: string, description: string, diff?: str
     diffLabel.className = 'perm-diff-label';
     diffLabel.textContent = 'Changes';
 
+    const zoomBtn = document.createElement('button');
+    zoomBtn.className = 'diff-zoom-btn';
+    zoomBtn.title = '拡大表示';
+    zoomBtn.textContent = '⤢';
+    zoomBtn.addEventListener('click', () => openDiffModal(description, diffLines));
+    diffLabel.appendChild(zoomBtn);
+
     const diffPre = document.createElement('pre');
     diffPre.className = 'perm-diff-pre';
-    diffPre.innerHTML = buildDiffHtml(
-      allLines.length > PREVIEW_LINES
-        ? allLines.slice(0, PREVIEW_LINES).join('\n')
-        : diff
-    );
+    diffPre.title = 'クリックで拡大表示';
+    diffPre.innerHTML = buildDiffHtml(diffLines.slice(0, PREVIEW_LINES));
+    diffPre.addEventListener('click', () => openDiffModal(description, diffLines));
 
     diffWrap.appendChild(diffLabel);
     diffWrap.appendChild(diffPre);
 
-    if (allLines.length > PREVIEW_LINES) {
+    if (diffLines.length > PREVIEW_LINES) {
       const expandBtn = document.createElement('button');
       expandBtn.className = 'diff-expand-btn';
-      expandBtn.textContent = `▼  ${allLines.length - PREVIEW_LINES} more lines`;
+      expandBtn.textContent = `▼  ${diffLines.length - PREVIEW_LINES} more lines`;
       expandBtn.addEventListener('click', () => {
-        diffPre.innerHTML = buildDiffHtml(diff);
+        diffPre.innerHTML = buildDiffHtml(diffLines);
         expandBtn.remove();
       });
       diffWrap.appendChild(expandBtn);
@@ -1415,14 +1515,14 @@ window.addEventListener('message', (event: MessageEvent) => {
           break;
         }
         case 'needs_permission': {
-          const p = ev as { toolName: string; description: string; diff?: string };
+          const p = ev as { toolName: string; description: string; diffLines?: DiffLine[] };
           removeThinking();
           flushMarkdown();
           clearLoadingIndicator();
           if (currentAssistantBubble?.childNodes.length === 0) {
             currentAssistantBubble.parentElement?.remove();
           }
-          showPermissionRequest(p.toolName, p.description, p.diff);
+          showPermissionRequest(p.toolName, p.description, p.diffLines);
           break;
         }
         case 'needs_input':
@@ -1527,6 +1627,14 @@ window.addEventListener('message', (event: MessageEvent) => {
       const models = msg['models'] as string[];
       const current = modelSelect.value;
       modelSelect.innerHTML = '';
+      if (models.length === 0) {
+        // 空のままだと「壊れた」ように見えるので状態を明示する
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.disabled = opt.selected = true;
+        opt.textContent = 'No models found';
+        modelSelect.appendChild(opt);
+      }
       models.forEach((m) => {
         const opt = document.createElement('option');
         opt.value = opt.textContent = m;
@@ -1640,3 +1748,5 @@ window.addEventListener('message', (event: MessageEvent) => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 vscode.postMessage({ type: 'ready' });
 autoResizeInput();
+// ここまで来ればリスナーは全て生きている — 静的HTMLのローディング表示を解除
+document.getElementById('boot-overlay')?.remove();

@@ -54,11 +54,15 @@ install.bat
 | **ファイル編集ツール** | `read_file`（行番号付き）, `get_file_outline`（構造のみ）, `write_file`, `edit_file`, `replace_lines`, `glob_search`, `grep_search` |
 | **3層ループ検知** | フィンガープリント（同一引数3回）＋ファイルパスレベル（同一ファイル再読、編集後はリセット）＋同一編集の即時ブロック |
 | **縮退リトライ** | 文字列反復＋行頻度＋自己修正マーカーの3種検知で自動リカバリ（最大2回）。中断前の分析末尾を次試行に引き継ぎ |
+| **宣言のみ終了の救済** | 「〜を検索します」と宣言だけしてツールを呼ばず終わる応答や、本文に書かれた疑似ツールコールを検知し、実行を促して再試行（最大2回、実ツール実行で回数リセット） |
 | **安定サンプリング** | Mirostat 2 + temperature 0.25 + top_p 0.9でローカルモデルのループ崩壊を抑制 |
 | **権限モード** | Ask / Edit / Plan / Auto の4モード。セッション中の一括許可も可能 |
+| **承認前diffプレビュー** | `write_file` / `replace_lines` / `edit_file` の承認前に、実ファイルと照合した行番号付きdiff（+/-マーカー・テーマ連動の背景色・変更箇所±3行の文脈）を表示。クリックで全画面拡大 |
 | **セッション履歴** | 過去のセッションを自動保存・復元（最大20件） |
-| **画像入力** | Visionモデルへ自動切替して画像を解析（ドラッグ&ドロップ） |
+| **ファイル添付** | 📎ボタン・クリップボード貼り付け（スクリーンショット可）・パネル全域へのドラッグ&ドロップ（VSCodeエクスプローラ/OSファイラ両対応） |
+| **画像入力** | 添付画像はVisionモデルへ自動切替して解析 |
 | **シンタックスハイライト** | コードブロックをhighlight.jsで色付け表示（VS Codeテーマ連動） |
+| **TeX数式表示** | KaTeXで数式をレンダリング。ツールバーの∑ボタンでTeX⇔プレーン表示を切替（LLMとの往復は生のTeXのまま） |
 | **Thinking表示** | DeepSeek-R1・Qwen3・Gemma4の推論過程を折り畳み表示 |
 | **SSH トンネル** | Windows OpenSSH経由でLinux上のOllamaにセキュア接続 |
 | **ローカルRAG** | 指定フォルダのドキュメントを索引化してコンテキストに活用 |
@@ -67,6 +71,7 @@ install.bat
 | **コンテキスト圧縮** | 手動（トークンリングクリック・`/compact`）または自動（85%で起動） |
 | **出力言語設定** | AIの最終回答言語を設定で指定（デフォルト: 日本語） |
 | **リクエストタイムアウト** | ストリーミング10分・通常2分で自動タイムアウト（ハング防止） |
+| **軽量起動** | KaTeX等の重い依存は数式出現時に遅延ロードして初期表示を高速化。起動中・モデル一覧取得中はローディング表示で状態を明示 |
 
 ---
 
@@ -189,14 +194,14 @@ AIの最終回答言語を指定します（内部推論・Thinking は言語を
 ## アーキテクチャ
 
 ```
-[Webview UI]
+[Webview UI]  ← markdown/KaTeX(遅延ロード)描画・添付(📎/paste/D&D)・diff拡大モーダル
     │ postMessage
     ▼
-[ChatViewProvider]
+[ChatViewProvider]  ← 承認UI（実ファイルと照合した行番号付きdiffを生成）
     │
     ├── AutoDispatchAgent  ← キーワード判定で以下へ転送（鮮度ガード: 天気/最新等はツール付きへ）
     ├── ChatOnlyAgent      ← ツールなし純会話
-    ├── AgentLoop          ← tool-calling（デフォルト。空応答ガード・重複編集ブロック付き）
+    ├── AgentLoop          ← tool-calling（デフォルト。空応答ガード・重複編集ブロック・宣言のみ終了の救済付き）
     ├── DebugPhaseAgent    ← Localize→Repair→Validate(+FAIL時バックエッジ)→Verify
     ├── ReActAgent         ← Thought/Action/Observation
     ├── RepoMapAgent       ← repo map + outline + plan & approve（STEP MISMATCH時1回再計画）

@@ -21,6 +21,9 @@ import { RepoMapLoopAgent } from '../agent/RepoMapLoopAgent';
 import { DebugPhaseAgent } from '../agent/DebugPhaseAgent';
 import { ChatOnlyAgent } from '../agent/ChatOnlyAgent';
 import { AutoDispatchAgent } from '../agent/AutoDispatchAgent';
+import { resolveWritePath } from '../agent/tools/pathUtils';
+import { diffForReplaceLines, diffForEditFile, diffForWriteFile, splitLines } from './diffUtils';
+import type { DiffLine } from './diffUtils';
 
 interface WebviewMessage {
   type: string;
@@ -119,61 +122,65 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.pendingPermission = resolve;
 
         let description: string;
-        let diff: string | undefined;
+        let diffLines: DiffLine[] | undefined;
 
         if (toolName === 'run_terminal') {
           const cmd = typeof args['command'] === 'string' ? args['command'] : '(unknown command)';
           description = `Run: ${cmd}`;
         } else {
           const filePath = typeof args['path'] === 'string' ? args['path'] : '(unknown path)';
-          const verb = toolName === 'write_file' ? 'Create/write' : 'Edit';
-          description = `${verb}: ${filePath}`;
+          description = `Edit: ${filePath}`;
 
-          // Build unified-diff style block for file operations
+          // 承認前に実ファイルの現内容と照合した差分を見せる。
+          // ツールと同じパス解決を使い、読めない場合は引数のみのフォールバック表示。
+          const readTarget = (): string | null => {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!root) return null;
+            const resolved = resolveWritePath(filePath, root);
+            if (!resolved.ok) return null;
+            try {
+              return fs.readFileSync(resolved.path, 'utf8');
+            } catch {
+              return null;
+            }
+          };
+
           if (toolName === 'replace_lines') {
-            const startLine = typeof args['start_line'] === 'number' ? args['start_line'] : '?';
-            const endLine = typeof args['end_line'] === 'number' ? args['end_line'] : '?';
-            description = `Edit: ${filePath} (lines ${startLine}–${endLine})`;
+            const startLine = typeof args['start_line'] === 'number' ? Math.round(args['start_line']) : null;
+            const endLine = typeof args['end_line'] === 'number' ? Math.round(args['end_line']) : null;
+            description = `Edit: ${filePath} (lines ${startLine ?? '?'}–${endLine ?? '?'})`;
             const newContent = typeof args['new_content'] === 'string' ? args['new_content'] : '';
-            if (newContent) {
-              const MAX = 30;
-              const lines = newContent.split('\n');
-              diff = [
-                ...lines.slice(0, MAX).map(l => `+${l}`),
-                ...(lines.length > MAX ? ['+…'] : []),
-              ].join('\n');
+            const current = readTarget();
+            if (current !== null && startLine !== null && endLine !== null && startLine >= 1) {
+              diffLines = diffForReplaceLines(current, startLine, endLine, newContent);
+            } else if (newContent) {
+              diffLines = splitLines(newContent).map(
+                (t, i): DiffLine => ({ kind: 'add', newNo: (startLine ?? 1) + i, text: t })
+              );
             }
           } else if (toolName === 'edit_file') {
             const oldStr = typeof args['old_str'] === 'string' ? args['old_str'] : '';
             const newStr = typeof args['new_str'] === 'string' ? args['new_str'] : '';
             if (oldStr || newStr) {
-              const MAX = 30;
-              const oldLines = oldStr.split('\n');
-              const newLines = newStr.split('\n');
-              const diffLines: string[] = [
-                ...oldLines.slice(0, MAX).map(l => `-${l}`),
-                ...(oldLines.length > MAX ? ['-…'] : []),
-                ...newLines.slice(0, MAX).map(l => `+${l}`),
-                ...(newLines.length > MAX ? ['+…'] : []),
-              ];
-              diff = diffLines.join('\n');
+              diffLines = diffForEditFile(readTarget(), oldStr, newStr);
             }
           } else if (toolName === 'write_file') {
             const content = typeof args['content'] === 'string' ? args['content'] : '';
-            if (content) {
-              const MAX = 40;
-              const lines = content.split('\n');
-              diff = [
-                ...lines.slice(0, MAX).map(l => `+${l}`),
-                ...(lines.length > MAX ? ['+…'] : []),
-              ].join('\n');
+            const current = readTarget();
+            description = `${current !== null ? 'Overwrite' : 'Create'}: ${filePath}`;
+            if (content || current !== null) {
+              diffLines = diffForWriteFile(current, content);
             }
+          }
+
+          if (diffLines && diffLines.length === 0) {
+            diffLines = [{ kind: 'gap', text: '(no changes)' }];
           }
         }
 
         this.view?.webview.postMessage({
           type: 'agentEvent',
-          event: { type: 'needs_permission', toolName, description, diff } as AgentEvent,
+          event: { type: 'needs_permission', toolName, description, diffLines } as AgentEvent,
         });
       });
     });
