@@ -1,8 +1,13 @@
 .vscode/**
+.claude/**
 src/**
 node_modules/**
 .git/**
 *.map
+*.vsix
 tsconfig*.json
 webpack.config.js
 install.bat
+.vsixignore
+.eslintrc.json
+.gitattributes
