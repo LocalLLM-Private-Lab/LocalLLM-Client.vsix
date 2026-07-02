@@ -12,7 +12,8 @@
     "@typescript-eslint/no-explicit-any": "off",
     "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
     "no-empty": ["error", { "allowEmptyCatch": true }],
-    "no-constant-condition": ["error", { "checkLoops": false }]
+    "no-constant-condition": ["error", { "checkLoops": false }],
+    "no-irregular-whitespace": ["error", { "skipRegExps": true }]
   },
   "ignorePatterns": ["dist", "node_modules", "*.js"]
 }
