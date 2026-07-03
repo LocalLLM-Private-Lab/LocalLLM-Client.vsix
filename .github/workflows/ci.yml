@@ -14,9 +14,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   build:
-    name: Lint / Typecheck / Build
+    name: Lint / Typecheck / Test / Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,20 +36,59 @@ jobs:
         run: npm ci
 
       - name: Lint
+        id: lint
         run: npm run lint
 
       - name: Typecheck
+        id: typecheck
         run: npm run typecheck
 
+      - name: Test
+        id: test
+        run: npm run test
+
+      - name: Publish test report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Vitest Results
+          path: 'test-results/junit.xml'
+          reporter: java-junit
+          fail-on-error: false
+
       - name: Build (production)
+        id: build
         run: npm run package
 
       - name: Package VSIX
+        id: vsix
         run: npx vsce package --no-dependencies
 
       - name: Upload VSIX artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ github.sha }}
           path: '*.vsix'
           retention-days: 14
+
+      - name: Job summary
+        if: always()
+        run: |
+          fmt() { case "$1" in
+            success) echo "✅ success";;
+            failure) echo "❌ failure";;
+            skipped) echo "⏭️ skipped";;
+            *) echo "$1";;
+          esac; }
+          {
+            echo "## CI Summary"
+            echo ""
+            echo "| Step | Result |"
+            echo "|---|---|"
+            echo "| Lint | $(fmt '${{ steps.lint.outcome }}') |"
+            echo "| Typecheck | $(fmt '${{ steps.typecheck.outcome }}') |"
+            echo "| Test | $(fmt '${{ steps.test.outcome }}') |"
+            echo "| Build (production) | $(fmt '${{ steps.build.outcome }}') |"
+            echo "| Package VSIX | $(fmt '${{ steps.vsix.outcome }}') |"
+          } >> "$GITHUB_STEP_SUMMARY"

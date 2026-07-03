@@ -1,5 +1,6 @@
 .vscode/**
 .claude/**
+.github/**
 src/**
 node_modules/**
 .git/**
@@ -7,6 +8,9 @@ node_modules/**
 *.vsix
 tsconfig*.json
 webpack.config.js
+vitest.config.ts
+coverage/**
+test-results/**
 install.bat
 .vsixignore
 .eslintrc.json

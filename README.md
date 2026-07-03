@@ -238,6 +238,31 @@ npm run watch     # ファイル変更を監視して自動ビルド
 npm run package   # 本番用バンドル生成
 ```
 
+### CIジョブ(lint/typecheck/test/package)のローカル実行
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) はpush/PR時に以下を順番に実行します。同じコマンドを手元でも実行できます。
+
+```bat
+npm ci                  :: package-lock.json通りにクリーンインストール（CIと同じ状態を再現）
+npm run lint            :: ESLint
+npm run typecheck       :: tsc --noEmit
+npm run test            :: Vitestによるユニットテスト
+npm run package         :: webpack本番ビルド
+npx vsce package --no-dependencies   :: .vsix パッケージ生成（CIのアーティファクト化と同じ）
+```
+
+いずれか1コマンドだけ流したい場合、`npm run test:coverage` でカバレッジ付きテストも実行できます（結果は `coverage/` に出力、Git管理対象外）。
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) はタグ `v*.*.*` のpushで動き、上記に加えて **タグ名と`package.json`の`version`が一致しているか** を検証してからGitHub Releaseに`.vsix`を添付します。リリース前に手元で確認する場合:
+
+```bat
+node -p "require('./package.json').version"   :: package.jsonのversionを確認
+git tag v0.1.0                                  :: 一致するタグを作成
+git push --tags
+```
+
+`VSCE_PAT` / `OVSX_PAT` をリポジトリのSecretsに設定していれば、Marketplace / Open VSX Registryへの公開もこのワークフローが自動で行います（未設定ならスキップ）。
+
 ---
 
 ## ライセンス

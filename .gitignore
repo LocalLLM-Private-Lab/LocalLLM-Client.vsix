@@ -11,6 +11,10 @@ node_modules/
 # TypeScript cache
 *.tsbuildinfo
 
+# Test coverage / reports
+coverage/
+test-results/
+
 # OS
 .DS_Store
 Thumbs.db
