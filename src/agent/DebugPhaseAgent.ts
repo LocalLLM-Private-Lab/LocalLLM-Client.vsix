@@ -55,7 +55,7 @@ export class DebugPhaseAgent {
     images?: string[]
   ): Promise<void> {
     this.contextManager.addMessage({ role: 'user', content: userMessage, images });
-    await this.contextManager.compactIfNeeded(signal);
+    await this.contextManager.compactIfNeeded(signal, (m) => onEvent({ type: 'thinking', content: m }));
     this.editedFiles.clear();
 
     // ── Phase 1: Localize ──────────────────────────────────────────────────
@@ -208,16 +208,22 @@ export class DebugPhaseAgent {
       const hasImages = messages.some(m => m.images?.length);
       const temperature = degenerationRetries > 0 ? 0.55 : CODING_SAMPLE_OPTIONS.temperature;
 
+      // フェーズ内2回目以降の生成(ツール無し継続・縮退/空出力リトライ)は
+      // phase_banner でカバーされないため、生成ごとに待機表示を出す(AgentLoop と同様)。
+      onEvent({ type: 'thinking', content: 'Waiting for LLM response…' });
+
       let streamError: unknown = null;
       try {
+        const model = this.modelRouter.getModelForImages(hasImages, 'coder');
+        onEvent({ type: 'model', content: model });
         await this.client.chatStream(
           {
-            model: this.modelRouter.getModelForImages(hasImages),
+            model,
             messages,
             tools: phaseTools.length > 0 ? phaseTools : undefined,
             ...(opts.think !== undefined
               ? { think: opts.think }
-              : (this.modelRouter.needsThinkParam() && { think: true })),
+              : (this.modelRouter.needsThinkParam(model) && { think: true })),
             options: { ...CODING_SAMPLE_OPTIONS, temperature, ...opts.extraOptions },
           },
           onDelta,

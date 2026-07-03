@@ -384,10 +384,12 @@ async function attemptPlan(
   const degDetector = new DegenerationDetector();
   const selfCorrDetector = new SelfCorrectionDetector();
 
+  const planModel = modelRouter.getCoderModel();
+  onEvent?.({ type: 'model', content: planModel });
   try {
     await client.chatStream(
       {
-        model: modelRouter.getChatModel(),
+        model: planModel,
         messages: [
           { role: 'system', content: buildPlanSystemPrompt(outputLanguage) },
           { role: 'user', content: userContent, images },

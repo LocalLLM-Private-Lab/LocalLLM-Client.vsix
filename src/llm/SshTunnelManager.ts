@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import type { SshConnectionConfig } from '../config/schema';
@@ -27,6 +28,11 @@ export class SshTunnelManager implements vscode.Disposable {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private abortController = new AbortController();
 
+  // 別ウィンドウが張ったトンネルに相乗りしている場合 true（自分は ssh を spawn していない）。
+  private adopted = false;
+  private healthTimer: NodeJS.Timeout | null = null;
+  private healthFailures = 0;
+
   private readonly _onStatusChange = new vscode.EventEmitter<TunnelStatus>();
   readonly onStatusChange = this._onStatusChange.event;
 
@@ -47,7 +53,11 @@ export class SshTunnelManager implements vscode.Disposable {
   stop(): void {
     this.abortController.abort();
     this.clearReconnectTimer();
+    this.clearHealthTimer();
+    // 相乗り中（adopted）は process が null のため killProcess は何もせず、
+    // 共有トンネル（他ウィンドウ所有の ssh）は殺さない。
     this.killProcess();
+    this.adopted = false;
     this.setState('disconnected');
   }
 
@@ -58,11 +68,23 @@ export class SshTunnelManager implements vscode.Disposable {
 
   private async connect(): Promise<void> {
     this.setState('connecting');
+    this.clearHealthTimer();
+    this.adopted = false;
 
     const localPort = this.config.localForwardPort;
 
-    // 使用中のポートを解放してから接続
-    await this.freePortIfOccupied(localPort);
+    // 既に同じローカルポートで Ollama が応答しているなら、別ウィンドウが張った
+    // トンネルに相乗りする（自分では ssh を spawn しない）。これにより複数ウィンドウ間で
+    // トンネルを奪い合わず共有できる。
+    if (await this.probeOllama(localPort)) {
+      this.adopted = true;
+      this.setState('connected');
+      this.startHealthMonitor(localPort);
+      return;
+    }
+
+    // ポートが Ollama として応答しない場合に限り、残留 ssh プロセスを掃除する。
+    await this.freeStalePort(localPort);
 
     const args = this.buildSshArgs();
     const sshPath = this.resolveSshPath();
@@ -74,8 +96,13 @@ export class SshTunnelManager implements vscode.Disposable {
 
     this.process.stderr?.on('data', (data: Buffer) => {
       const msg = data.toString();
+      const lower = msg.toLowerCase();
+      // 複数ウィンドウ同時起動時のポート競合は相乗りで自己修復するため通知しない。
+      if (lower.includes('address already in use') || lower.includes('forwarding')) {
+        return;
+      }
       // OpenSSHは接続確立後にstderrへメッセージを出力する場合がある
-      if (msg.toLowerCase().includes('warning') || msg.toLowerCase().includes('error')) {
+      if (lower.includes('warning') || lower.includes('error')) {
         vscode.window.showWarningMessage(`SSH Tunnel: ${msg.trim()}`);
       }
     });
@@ -165,6 +192,52 @@ export class SshTunnelManager implements vscode.Disposable {
     }
   }
 
+  /**
+   * 相乗り（adopted）中のトンネルの死活を定期監視する。
+   * 所有者ウィンドウが閉じる等で共有トンネルが消えたら、自分が張り直して
+   * 新しい所有者になる（connect 経由で ssh を spawn）。
+   */
+  private startHealthMonitor(port: number): void {
+    this.clearHealthTimer();
+    this.healthFailures = 0;
+    this.healthTimer = setInterval(async () => {
+      if (this.abortController.signal.aborted) return;
+      const alive = await this.probeOllama(port);
+      if (alive) {
+        this.healthFailures = 0;
+        return;
+      }
+      // 一過性の失敗（瞬断・タイムアウト）で張り直さないよう連続失敗で判定する。
+      if (++this.healthFailures < 2) return;
+      this.clearHealthTimer();
+      // 自分が所有者として再確立する。
+      this.connect();
+    }, 10_000);
+  }
+
+  private clearHealthTimer(): void {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+  }
+
+  /**
+   * 指定ローカルポートに対し HTTP GET / を投げ、Ollama（=生きたトンネル）が
+   * 応答するか判定する。残留 ssh はローカル TCP は受けるがリモートへの
+   * チャネル確立に失敗するため、HTTP レベルでは error/timeout となり false を返す。
+   */
+  private probeOllama(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 2_000 }, (res) => {
+        res.resume(); // レスポンスボディを破棄してソケットを解放
+        resolve((res.statusCode ?? 0) > 0);
+      });
+      req.once('timeout', () => { req.destroy(); resolve(false); });
+      req.once('error', () => resolve(false));
+    });
+  }
+
   private setState(state: TunnelState, error?: string): void {
     this.state = state;
     this._onStatusChange.fire({ state, localPort: this.config.localForwardPort, error });
@@ -201,10 +274,11 @@ export class SshTunnelManager implements vscode.Disposable {
   }
 
   /**
-   * 指定ポートが既に使用中なら、このプロセスが以前に起動した残留 ssh プロセスを
-   * 探して強制終了する（Windows: netstat + taskkill）。
+   * Ollama として応答しないのにポートを占有している残留 ssh プロセス（前セッションの
+   * 死んだトンネル等）を探して強制終了する（Windows: netstat + taskkill）。
+   * 呼び出し前に probeOllama が false であること（=生きた共有トンネルではないこと）が前提。
    */
-  private async freePortIfOccupied(port: number): Promise<void> {
+  private async freeStalePort(port: number): Promise<void> {
     const inUse = await new Promise<boolean>((resolve) => {
       const sock = net.createConnection({ port, host: '127.0.0.1' });
       sock.once('connect', () => { sock.destroy(); resolve(true); });
