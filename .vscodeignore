@@ -10,6 +10,7 @@ tsconfig*.json
 webpack.config.js
 vitest.config.ts
 coverage/**
+test-results/**
 install.bat
 .vsixignore
 .eslintrc.json

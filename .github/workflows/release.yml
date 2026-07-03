@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  checks: write
 
 jobs:
   release:
@@ -26,15 +27,28 @@ jobs:
         run: npm ci
 
       - name: Lint
+        id: lint
         run: npm run lint
 
       - name: Typecheck
+        id: typecheck
         run: npm run typecheck
 
       - name: Test
+        id: test
         run: npm run test
 
+      - name: Publish test report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Vitest Results
+          path: 'test-results/junit.xml'
+          reporter: java-junit
+          fail-on-error: false
+
       - name: Verify tag matches package.json version
+        id: version-check
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
@@ -44,9 +58,11 @@ jobs:
           fi
 
       - name: Package VSIX
+        id: vsix
         run: npx vsce package --no-dependencies
 
       - name: Create GitHub Release
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -55,13 +71,39 @@ jobs:
             --generate-notes
 
       - name: Publish to Visual Studio Marketplace
+        id: marketplace
         if: ${{ secrets.VSCE_PAT != '' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: npx vsce publish --no-dependencies --packagePath *.vsix
 
       - name: Publish to Open VSX Registry
+        id: openvsx
         if: ${{ secrets.OVSX_PAT != '' }}
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: npx ovsx publish *.vsix -p "$OVSX_PAT"
+
+      - name: Job summary
+        if: always()
+        run: |
+          fmt() { case "$1" in
+            success) echo "✅ success";;
+            failure) echo "❌ failure";;
+            skipped) echo "⏭️ skipped";;
+            *) echo "$1";;
+          esac; }
+          {
+            echo "## Release Summary (${GITHUB_REF_NAME})"
+            echo ""
+            echo "| Step | Result |"
+            echo "|---|---|"
+            echo "| Lint | $(fmt '${{ steps.lint.outcome }}') |"
+            echo "| Typecheck | $(fmt '${{ steps.typecheck.outcome }}') |"
+            echo "| Test | $(fmt '${{ steps.test.outcome }}') |"
+            echo "| Version check | $(fmt '${{ steps.version-check.outcome }}') |"
+            echo "| Package VSIX | $(fmt '${{ steps.vsix.outcome }}') |"
+            echo "| GitHub Release | $(fmt '${{ steps.release.outcome }}') |"
+            echo "| Marketplace publish | $(fmt '${{ steps.marketplace.outcome }}') |"
+            echo "| Open VSX publish | $(fmt '${{ steps.openvsx.outcome }}') |"
+          } >> "$GITHUB_STEP_SUMMARY"
