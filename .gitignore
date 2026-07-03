@@ -11,6 +11,9 @@ node_modules/
 # TypeScript cache
 *.tsbuildinfo
 
+# Test coverage
+coverage/
+
 # OS
 .DS_Store
 Thumbs.db
