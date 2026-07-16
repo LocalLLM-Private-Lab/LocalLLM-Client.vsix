@@ -23,10 +23,12 @@ export class ConfigManager {
         },
       },
       models: {
-        // Fallbacks mirror the defaults declared in package.json `contributes.configuration`
-        // general が基準。各スロットは空文字なら general に追従する。
-        general: cfg.get<string>('models.general', 'gemma4:26b-a4b-it-q4_K_M'),
-        chat: cfg.get<string>('models.chat', ''),
+        // general と chat は設定(settings.json)からは扱わない。
+        // general はヘッダーで選択し globalState に永続化される値が真実で、
+        // ChatViewProvider が applyConfig 後に再適用する。ここでは初期既定のみ。
+        // chat は常に空 = general 追従。残りのスロットは空なら general に追従。
+        general: 'gemma4:26b-a4b-it-q4_K_M',
+        chat: '',
         coder: cfg.get<string>('models.coder', ''),
         vision: cfg.get<string>('models.vision', ''),
         translate: cfg.get<string>('models.translate', ''),

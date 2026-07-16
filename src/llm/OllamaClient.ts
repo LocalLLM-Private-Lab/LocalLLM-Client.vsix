@@ -179,6 +179,9 @@ export class OllamaClient {
     const decoder = new TextDecoder();
     let fullContent = '';
     let responseModel: string | undefined;
+    // Ollama は生成完了時に done:true のチャンクを必ず最後に送る。これを受信しないまま
+    // ボディが終わった場合は接続が途中で切れた(SSHトンネル断など) → 切り捨てを検知する。
+    let sawDone = false;
     const allToolCalls: OllamaToolCall[] = [];
     // Track whether we are currently inside an Ollama thinking block so we can
     // emit proper <think>…</think> wrappers for the UI state machine.
@@ -197,6 +200,7 @@ export class OllamaClient {
         return; // 壊れた行はスキップ（バッファリング済みなので通常発生しない）
       }
       responseModel = chunk.model;
+      if (chunk.done) sawDone = true;
 
       // Ollama thinking field (separate from content for models like Gemma 4)
       if (chunk.message?.thinking) {
@@ -254,6 +258,16 @@ export class OllamaClient {
       if (inThinking) {
         onDelta({ content: '</think>' });
       }
+    }
+
+    // done:true を受け取らずにボディが閉じた = 応答が途中で切断された。
+    // ユーザー停止/タイムアウトは reader.read() が例外を投げるためここには来ない。
+    // 無言で部分応答を「完全な回答」として返すと短い回答に見えるため、明示的に失敗させる。
+    if (!sawDone && !signal?.aborted) {
+      throw new Error(
+        'Response stream ended before completion (connection interrupted — ' +
+        'likely an SSH tunnel drop). The partial output above may be truncated.'
+      );
     }
 
     return {
