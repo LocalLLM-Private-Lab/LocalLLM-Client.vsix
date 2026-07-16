@@ -5,7 +5,7 @@ import type { ToolRegistry } from './ToolRegistry';
 import { FILE_EDIT_TOOLS } from './ToolRegistry';
 import { DegenerationDetector, SelfCorrectionDetector } from './degenerationDetector';
 import { compressToolResult } from './toolResultUtils';
-import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage, stableStringify, LoopGuardState } from './agentUtils';
+import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage, stableStringify, readRangeKey, LoopGuardState } from './agentUtils';
 
 export interface AgentEvent {
   type: 'thinking' | 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' |
@@ -82,8 +82,11 @@ export class AgentLoop {
     const MAX_FINGERPRINT_HISTORY = 10;
     const LOOP_THRESHOLD = 3;
 
-    // File-path-level read loop detection (separate from fingerprint — catches same file with different ranges)
-    const fileReadCounts = new Map<string, number>();
+    // Per-file, per-range read loop detection (separate from the generic
+    // fingerprint check — this one has a whole-run memory, not just a
+    // rolling window). Keyed by range so reading DIFFERENT sections of a
+    // large file in sequence is never mistaken for re-reading the same one.
+    const fileReadCounts = new Map<string, Map<string, number>>();
 
     const degDetector = new DegenerationDetector();
     const selfCorrDetector = new SelfCorrectionDetector();
@@ -347,17 +350,20 @@ export class AgentLoop {
         }
 
         if (call.function.name === 'read_file') {
-          // File-path-level loop detection (same file, any line range)
+          // Same file AND same region — a fresh range on the same path is progress, not a loop.
           const filePath = typeof parsedArgs['path'] === 'string' ? parsedArgs['path'] : JSON.stringify(parsedArgs);
-          const count = (fileReadCounts.get(filePath) ?? 0) + 1;
-          fileReadCounts.set(filePath, count);
+          const rangeKey = readRangeKey(parsedArgs);
+          const ranges = fileReadCounts.get(filePath) ?? new Map<string, number>();
+          const count = (ranges.get(rangeKey) ?? 0) + 1;
+          ranges.set(rangeKey, count);
+          fileReadCounts.set(filePath, ranges);
           if (count > FILE_READ_THRESHOLD) {
             blockedResults.set(j, {
               success: false,
               output:
-                `[READ LOOP] "${filePath}" を既に ${count - 1} 回読んでいます。` +
-                `内容はすでにコンテキスト内にあります。同じファイルを再読しないでください。` +
-                `edit_file または replace_lines で修正を適用するか、別のファイルを確認してください。`,
+                `[READ LOOP] "${filePath}" の行 ${rangeKey} を既に ${count - 1} 回読んでいます。` +
+                `内容はすでにコンテキスト内にあります。同じ範囲を再読しないでください。` +
+                `edit_file または replace_lines で修正を適用するか、別の範囲/ファイルを確認してください。`,
             });
           }
         }
