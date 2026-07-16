@@ -75,6 +75,18 @@ export class GitManager {
     }
   }
 
+  /** ラン開始時のスナップショットから現在の作業ツリーまでの差分サマリ。
+   *  スナップショットが無ければ null（読み取り専用ターン、または git 連携無効）。 */
+  async diffStatSinceSnapshot(workspaceRoot: string): Promise<string | null> {
+    if (!this.snapshotSha) return null;
+    try {
+      const { stdout } = await execFileAsync('git', ['diff', '--stat', this.snapshotSha], { cwd: workspaceRoot });
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /** スナップショットに戻す（git reset --hard <sha>） */
   async rollback(workspaceRoot: string): Promise<ToolResult> {
     if (!this.snapshotSha) {

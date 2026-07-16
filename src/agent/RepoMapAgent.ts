@@ -695,6 +695,13 @@ export async function executeSteps(
       // declaration from attempt 1 must not be re-matched after the retry
       // (observed: a stale STEP SKIP fired right as the model was about to edit).
       const attemptTextStart = stepText.length;
+      // A retried attempt supersedes the one before it: errors logged while
+      // producing "no action" / "missing edit" (the exact conditions that
+      // triggered this retry) must not survive alongside a successful retry —
+      // observed: attempt 1's failed edit ("old_str not found") stayed in
+      // stepErrors even after attempt 2 applied the fix correctly, inflating
+      // the step/cycle error count and triggering pointless re-plans.
+      stepErrors.length = 0;
       await loop.runFromContext(innerOnEvent, signal, guard);
       if (signal.aborted) break;
       const attemptText = stepText.slice(attemptTextStart);

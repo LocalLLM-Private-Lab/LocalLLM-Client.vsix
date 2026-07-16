@@ -22,6 +22,7 @@ import { DebugPhaseAgent } from '../agent/DebugPhaseAgent';
 import { ChatOnlyAgent } from '../agent/ChatOnlyAgent';
 import { AutoDispatchAgent } from '../agent/AutoDispatchAgent';
 import { resolveWritePath } from '../agent/tools/pathUtils';
+import { detectDestructiveCommand } from '../agent/tools/dangerousCommand';
 import { diffForReplaceLines, diffForEditFile, diffForWriteFile, splitLines } from './diffUtils';
 import type { DiffLine } from './diffUtils';
 
@@ -108,12 +109,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // pure chat / read-only turns never pollute history with WIP commits)
       await this.ensureSnapshot();
 
-      // Auto mode: approve everything
-      if (this.editMode === 'auto') return true;
-      // Edit mode: approve file edits silently, still ask for terminal
-      if (this.editMode === 'edit' && FILE_EDIT_TOOLS.has(toolName)) return true;
-      if (toolName === 'run_terminal' && this.allowTerminal) return true;
-      if (FILE_EDIT_TOOLS.has(toolName) && this.sessionAllowFileEdits) return true;
+      // A local model can misfire on destructive/hard-to-reverse commands
+      // (rm -rf, git push --force, git reset --hard). Those must always get
+      // an explicit, clearly-labeled confirmation — the "allow terminal for
+      // this session" convenience toggle is meant for reruns of benign
+      // commands (tests/builds), not a blanket license for this class of risk.
+      const destructiveReason =
+        toolName === 'run_terminal' && typeof args['command'] === 'string'
+          ? detectDestructiveCommand(args['command'])
+          : null;
+
+      if (!destructiveReason) {
+        // Auto mode: approve everything
+        if (this.editMode === 'auto') return true;
+        // Edit mode: approve file edits silently, still ask for terminal
+        if (this.editMode === 'edit' && FILE_EDIT_TOOLS.has(toolName)) return true;
+        if (toolName === 'run_terminal' && this.allowTerminal) return true;
+        if (FILE_EDIT_TOOLS.has(toolName) && this.sessionAllowFileEdits) return true;
+      }
 
       return new Promise<boolean>((resolve) => {
         if (this.pendingPermission) {
@@ -126,7 +139,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
         if (toolName === 'run_terminal') {
           const cmd = typeof args['command'] === 'string' ? args['command'] : '(unknown command)';
-          description = `Run: ${cmd}`;
+          description = destructiveReason
+            ? `⚠ DESTRUCTIVE (${destructiveReason}): ${cmd}`
+            : `Run: ${cmd}`;
         } else {
           const filePath = typeof args['path'] === 'string' ? args['path'] : '(unknown path)';
           description = `Edit: ${filePath}`;
@@ -291,6 +306,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.gitManager.createSnapshot(workspaceRoot);
       }
     } catch { /* snapshot failure must not block the tool */ }
+  }
+
+  /** Posts a consolidated "what changed this run" diff-stat, once per run,
+   *  when at least one mutating tool actually ran (this.snapshotTaken). A run
+   *  spans many steps/cycles whose individual edits were each already shown
+   *  as a pre-approval diff — this is the "what did it all add up to" view. */
+  private async postChangeSummary(workspaceRoot: string): Promise<void> {
+    if (!this.snapshotTaken) return;
+    try {
+      const stat = await this.gitManager.diffStatSinceSnapshot(workspaceRoot);
+      if (stat) {
+        this.view?.webview.postMessage({
+          type: 'agentEvent',
+          event: { type: 'text', content: `\n---\n**Changes this run:**\n\`\`\`\n${stat}\n\`\`\`\n` } as AgentEvent,
+        });
+      }
+    } catch { /* best-effort — must not affect the run's outcome */ }
   }
 
   handleNewSession(): void {
@@ -863,6 +895,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.client, this.contextManager, this.modelRouter, this.toolRegistry, workspaceRoot
         );
         await agent.run(fullMessage, onEvent, signal, images);
+      }
+
+      // 変更点の統合サマリ: 個々の編集は適用前のdiffプレビューで確認済みだが、
+      // 複数ステップ/複数サイクルにまたがるランでは「結局このターンで何を
+      // 変えたか」を一望できない。スナップショットが取られた(=変更が発生した)
+      // ランでのみ、git diff --stat をまとめて表示する。
+      if (!signal.aborted && runId === this.currentRunId) {
+        await this.postChangeSummary(workspaceRoot);
       }
 
       // 翻訳ON: 最終ターンの英語本文(think除去後)を日本語へ訳し、

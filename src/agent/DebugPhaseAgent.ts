@@ -7,7 +7,7 @@ import { DegenerationDetector, SelfCorrectionDetector } from './degenerationDete
 import { CODING_SAMPLE_OPTIONS } from './AgentLoop';
 import { compressToolResult } from './toolResultUtils';
 import { BehaviorVerifier } from './BehaviorVerifier';
-import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage } from './agentUtils';
+import { stripThink, parseToolCalls, invalidateReadCounts, buildRecoveryMessage, readRangeKey } from './agentUtils';
 
 /**
  * 3-phase debug agent: Localize → Repair → Validate
@@ -171,7 +171,7 @@ export class DebugPhaseAgent {
     let lastAssistantContent = '';
     const degDetector = new DegenerationDetector();
     const selfCorrDetector = new SelfCorrectionDetector();
-    const fileReadCounts = new Map<string, number>();
+    const fileReadCounts = new Map<string, Map<string, number>>();
     let fileModified = false;
     let forcedEditCount = 0;
     let degenerationRetries = 0;
@@ -313,17 +313,20 @@ export class DebugPhaseAgent {
               `Stay focused on the ${phaseName} phase goal.`,
           };
         } else if (call.function.name === 'read_file') {
-          // File-path-level loop detection (same file, regardless of line range)
+          // Same file AND same region — a fresh range on the same path is progress, not a loop.
           const filePath = typeof parsedArgs['path'] === 'string' ? parsedArgs['path'] : '';
-          const count = (fileReadCounts.get(filePath) ?? 0) + 1;
-          fileReadCounts.set(filePath, count);
+          const rangeKey = readRangeKey(parsedArgs);
+          const ranges = fileReadCounts.get(filePath) ?? new Map<string, number>();
+          const count = (ranges.get(rangeKey) ?? 0) + 1;
+          ranges.set(rangeKey, count);
+          fileReadCounts.set(filePath, ranges);
 
           if (count > FILE_READ_THRESHOLD) {
             result = {
               success: false,
               output:
-                `[READ LOOP] "${filePath}" を既に ${count - 1} 回読んでいます。` +
-                `内容はコンテキスト内に存在します。同じファイルを再読しないでください。\n` +
+                `[READ LOOP] "${filePath}" の行 ${rangeKey} を既に ${count - 1} 回読んでいます。` +
+                `内容はコンテキスト内に存在します。同じ範囲を再読しないでください。\n` +
                 `edit_file または replace_lines で修正を適用してください。` +
                 `修正箇所が不明な場合は get_file_outline でクラス構造全体を確認してください。`,
             };
